@@ -6,167 +6,125 @@ Công cụ mod ROM dành riêng cho thiết bị **Rockchip** với giao diện 
 ![Python](https://img.shields.io/badge/python-3.10+-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-orange.svg)
 
-> Giao diện lấy cảm hứng từ CRB Android Kitchen.
+> Giao diện clone workflow CRB Android Kitchen.
 
 ## Tính năng
 
-### Phase 1 (Đã hoàn thành)
-- 🔧 **Extract ROM (Auto)**: Tự động detect và extract update.img, release_update.img, super.img
-- 📦 **Patches**: Disable dm-verity, AVB, enable ADB root, debloat apps
-- 🔨 **Build ROM**: Đóng gói ROM đã mod thành file output
-- 🌐 **Đa ngôn ngữ**: Hỗ trợ Tiếng Việt và English
-- 💾 **Workspace**: Quản lý nhiều projects
-
-### Phase 2 (Mới)
-- 🏗️ **Build Image**: Build ext4/erofs image từ source folder (raw hoặc sparse)
-- 🔓 **Disable dm-verity/AVB**: Tạo vbmeta_disabled.img + patch fstab (B2)
-- 🗑️ **Debloater**: Scan và xóa APK bloatware (move to Recycle Bin)
-- 🔧 **Magisk Patch**: Patch boot/init_boot với Magisk
-- 📦 **Unpack/Repack Boot**: Xử lý boot.img, vendor_boot.img, init_boot.img
+### Phase 2 (Real Implementation)
+- 🔧 **Extract ROM**: update.img, release_update.img, super.img
+- 🏗️ **Build Image**: ext4/erofs từ source folder (raw/sparse/both)
+- 🔓 **Disable AVB/dm-verity**: vbmeta_disabled.img + fstab patch B2
+- 🗑️ **Debloater**: Scan APK, parse metadata (aapt2), delete to Recycle Bin
+- 🔧 **Magisk Patch**: Mode 1 (magiskboot) + Mode 2 (ADB-assisted)
+- 📦 **Boot Unpack/Repack**: magiskboot hoặc unpackbootimg/mkbootimg
 
 ## Yêu cầu hệ thống
 
 - **OS**: Windows 10/11 (64-bit)
-- **Python**: 3.10 trở lên
+- **Python**: 3.10+
 - **RAM**: 4GB+ (khuyến nghị 8GB)
-- **Disk**: 10GB trống cho workspace
 
 ## Cài đặt
-
-### 1. Clone repository
 
 ```bash
 git clone https://github.com/chinhphamhuu/chinh.git
 cd chinh/rk_rom_kitchen
-```
-
-### 2. Cài đặt dependencies
-
-```bash
 pip install -r requirements.txt
-```
-
-### 3. Chạy ứng dụng
-
-```bash
 run.bat
 ```
 
-Hoặc:
+## Tools Required
 
+### Scan tools với Tools Doctor:
 ```bash
-python -m app.main
+python -m app.tools.registry
 ```
 
-## Cấu trúc Workspace
+### Đặt tools vào: `third_party/tools/win64/`
 
-Workspace root: `%USERPROFILE%\Documents\RK_Kitchen\Projects`
+| Tool ID | Aliases | Required | Purpose |
+|---------|---------|----------|---------|
+| `img_unpack` | img_unpack.exe, imgRePackerRK.exe | ✓ | Rockchip unpack |
+| `afptool` | afptool.exe | ✓ | Rockchip firmware |
+| `lpunpack` | lpunpack.exe | ✓ | Super partition unpack |
+| `lpmake` | lpmake.exe | ✓ | Super partition build |
+| `simg2img` | simg2img.exe | ✓ | Sparse to raw |
+| `img2simg` | img2simg.exe | ✓ | Raw to sparse |
+| `avbtool` | avbtool.exe, avbtool.py | ✓ | AVB disable |
+| `make_ext4fs` | make_ext4fs.exe | ✓ | Build ext4 image |
+| `mkfs_erofs` | mkfs.erofs.exe | | Build erofs image |
+| `magiskboot` | magiskboot.exe | | Boot unpack/patch |
+| `unpackbootimg` | unpackbootimg.exe | | Boot unpack alt |
+| `mkbootimg` | mkbootimg.exe | | Boot repack alt |
+| `aapt2` | aapt2.exe | | APK metadata |
+| `adb` | adb.exe | | ADB Magisk mode |
 
-```
-Projects/
-├── project_1/
-│   ├── in/                    # Input ROM files
-│   ├── out/
-│   │   ├── Source/            # Extracted source tree
-│   │   │   ├── system_a/      # System partition
-│   │   │   ├── vendor_a/      # Vendor partition
-│   │   │   └── product_a/     # Product partition
-│   │   └── Image/             # Built images
-│   ├── temp/                  # Temporary files
-│   ├── logs/                  # Project logs
-│   └── config/                # project.json + presets
-└── project_2/
-    └── ...
-```
-
-## Cách đặt Tools
-
-### Tùy chọn 1: Thư mục third_party
-
-Đặt các tool vào `rk_rom_kitchen/third_party/tools/win64/`:
+## Workspace Structure
 
 ```
-third_party/tools/win64/
-├── make_ext4fs.exe      # Build ext4 images
-├── mkfs.erofs.exe       # Build erofs images
-├── img2simg.exe         # Convert raw to sparse
-├── simg2img.exe         # Convert sparse to raw
-├── lpunpack.exe         # Unpack super.img
-├── lpmake.exe           # Build super.img
-├── avbtool.py           # Android Verified Boot tool
-└── ...
+%USERPROFILE%\Documents\RK_Kitchen\Projects\
+└── project_name/
+    ├── in/                    # Input ROM files
+    ├── out/
+    │   ├── Source/            # Extracted source tree
+    │   │   ├── system_a/
+    │   │   ├── vendor_a/
+    │   │   └── boot/          # Unpacked boot images
+    │   └── Image/             # Built images
+    ├── temp/
+    ├── logs/
+    └── config/project.json
 ```
 
-### Tùy chọn 2: Custom tool_dir
+## ROM Support
 
-Trong Settings > Tool Directory, chỉ định đường dẫn thư mục chứa tools.
-
-### Tùy chọn 3: System PATH
-
-Thêm thư mục tools vào biến môi trường PATH của Windows.
-
-## Các loại ROM được hỗ trợ
-
-| Priority | File | Mô tả |
-|----------|------|-------|
+| Priority | File | Description |
+|----------|------|-------------|
 | 1 | `update.img` | Rockchip full firmware |
 | 2 | `release_update.img` | Rockchip release firmware |
 | 3 | `super.img` | Android super partition |
 
-## Log files
+## Usage Examples
 
-- **App log**: `%APPDATA%\rk_kitchen\app.log`
-- **Crash log**: `%APPDATA%\rk_kitchen\crash.log`
-- **Settings**: `%APPDATA%\rk_kitchen\settings.json`
-- **Project log**: `<workspace>/<project>/logs/project.log`
+### Build Image
+1. Extract ROM → out/Source/
+2. Menu: Other → Build Image
+3. Chọn partition, filesystem (ext4/erofs), output type (raw/sparse/both)
+4. Click Build
 
-## Build Portable EXE
+### Disable dm-verity
+1. Extract ROM
+2. Menu: Other → AVB/DM-Verity/Forceencrypt
+3. Click "Disable All (A+B)"
+4. Output: out/Image/vbmeta_disabled.img + patched fstab
+
+### Magisk Patch
+1. Menu: Kernel/Decrypt/Boot → Magisk Patch
+2. Select boot.img và Magisk.apk
+3. Mode 1: auto với magiskboot
+4. Mode 2: ADB-assisted nếu không có magiskboot
+
+### Debloater
+1. Menu: Other → Debloater
+2. Scan APK
+3. Search/filter, select apps
+4. Delete to Recycle Bin
+
+## Dev Commands
 
 ```bash
-cd build
-build.bat
-```
+# Run app
+python -m app.main
 
-Output: `dist/RK_ROM_Kitchen/`
-
-## Smoke Test
-
-```bash
-cd rk_rom_kitchen
+# Smoke test
 python -m app.tests.smoke_test
-```
 
-## Phase 1 vs Phase 2
+# Tools doctor
+python -m app.tools.registry
 
-| Feature | Phase 1 | Phase 2 |
-|---------|---------|---------|
-| Build Image | Demo | Thật (ext4/erofs) |
-| vbmeta disabled | Stub | Thật (avbtool) |
-| fstab patch | Stub | Thật (B2 rules) |
-| Debloater | - | Scan + Delete |
-| Magisk patch | - | UI + Demo |
-| Boot unpack | - | UI + Demo |
-
-## Cấu trúc source code
-
-```
-rk_rom_kitchen/
-├── app/
-│   ├── main.py              # Entry point
-│   ├── i18n.py              # Đa ngôn ngữ VI/EN
-│   ├── crash_guard.py       # Exception handler
-│   ├── core/                # Business logic
-│   │   ├── build_image.py   # Build ext4/erofs
-│   │   ├── avb_manager.py   # vbmeta + fstab
-│   │   ├── debloater.py     # APK scanner
-│   │   └── ...
-│   ├── tools/               # CLI wrappers
-│   └── ui/                  # PyQt5 UI
-├── patches/                 # Patch configs
-├── assets/                  # Icons/themes
-└── third_party/tools/       # CLI tools
+# Build EXE
+cd build && build.bat
 ```
 
 ## License
-
-MIT License
+MIT

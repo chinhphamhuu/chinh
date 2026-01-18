@@ -1,71 +1,160 @@
 {
-    "version": "1.0",
-    "description": "Tool manifest cho RK ROM Kitchen - Phase 2 Download",
-    "base_url": "https://example.com/tools/",
+    "version": "2.0.0",
+    "description": "Tools manifest for RK ROM Kitchen - Rockchip only",
     "tools": [
         {
-            "name": "img_unpack",
-            "exe": "img_unpack.exe",
-            "description": "Rockchip image unpacker",
-            "url": "img_unpack_v1.0.zip",
-            "sha256": "placeholder_hash",
-            "size": 102400
+            "id": "img_unpack",
+            "name": "Rockchip Image Unpacker",
+            "aliases": [
+                "img_unpack.exe",
+                "imgRePackerRK.exe"
+            ],
+            "required": true,
+            "platform": "win64"
         },
         {
-            "name": "afptool",
-            "exe": "afptool.exe",
-            "description": "Rockchip AFPTool for firmware packing",
-            "url": "afptool_v1.0.zip",
-            "sha256": "placeholder_hash",
-            "size": 204800
+            "id": "afptool",
+            "name": "AFPTool",
+            "aliases": [
+                "afptool.exe"
+            ],
+            "required": true,
+            "platform": "win64"
         },
         {
-            "name": "rkImageMaker",
-            "exe": "rkImageMaker.exe",
-            "description": "Rockchip image maker",
-            "url": "rkImageMaker_v1.0.zip",
-            "sha256": "placeholder_hash",
-            "size": 153600
+            "id": "rkImageMaker",
+            "name": "Rockchip Image Maker",
+            "aliases": [
+                "rkImageMaker.exe"
+            ],
+            "required": true,
+            "platform": "win64"
         },
         {
-            "name": "lpunpack",
-            "exe": "lpunpack.exe",
-            "description": "Android super partition unpacker",
-            "url": "lpunpack_v1.0.zip",
-            "sha256": "placeholder_hash",
-            "size": 512000
+            "id": "lpunpack",
+            "name": "Super Partition Unpacker",
+            "aliases": [
+                "lpunpack.exe"
+            ],
+            "required": true,
+            "platform": "win64"
         },
         {
-            "name": "lpmake",
-            "exe": "lpmake.exe",
-            "description": "Android super partition maker",
-            "url": "lpmake_v1.0.zip",
-            "sha256": "placeholder_hash",
-            "size": 512000
+            "id": "lpmake",
+            "name": "Super Partition Maker",
+            "aliases": [
+                "lpmake.exe"
+            ],
+            "required": true,
+            "platform": "win64"
         },
         {
-            "name": "simg2img",
-            "exe": "simg2img.exe",
-            "description": "Sparse image to raw image converter",
-            "url": "simg2img_v1.0.zip",
-            "sha256": "placeholder_hash",
-            "size": 102400
+            "id": "lpdump",
+            "name": "Super Partition Dumper",
+            "aliases": [
+                "lpdump.exe"
+            ],
+            "required": false,
+            "platform": "win64"
         },
         {
-            "name": "img2simg",
-            "exe": "img2simg.exe",
-            "description": "Raw image to sparse image converter",
-            "url": "img2simg_v1.0.zip",
-            "sha256": "placeholder_hash",
-            "size": 102400
+            "id": "simg2img",
+            "name": "Sparse to Raw Converter",
+            "aliases": [
+                "simg2img.exe"
+            ],
+            "required": true,
+            "platform": "win64"
         },
         {
-            "name": "avbtool",
-            "exe": "avbtool.exe",
-            "description": "Android Verified Boot tool",
-            "url": "avbtool_v1.0.zip",
-            "sha256": "placeholder_hash",
-            "size": 256000
+            "id": "img2simg",
+            "name": "Raw to Sparse Converter",
+            "aliases": [
+                "img2simg.exe"
+            ],
+            "required": true,
+            "platform": "win64"
+        },
+        {
+            "id": "avbtool",
+            "name": "Android Verified Boot Tool",
+            "aliases": [
+                "avbtool.exe",
+                "avbtool.py"
+            ],
+            "required": true,
+            "platform": "win64",
+            "note": "Can be Python script (avbtool.py) or compiled exe"
+        },
+        {
+            "id": "make_ext4fs",
+            "name": "Make EXT4 Filesystem",
+            "aliases": [
+                "make_ext4fs.exe"
+            ],
+            "required": true,
+            "platform": "win64"
+        },
+        {
+            "id": "mkfs_erofs",
+            "name": "Make EROFS Filesystem",
+            "aliases": [
+                "mkfs.erofs.exe",
+                "mkfs_erofs.exe"
+            ],
+            "required": false,
+            "platform": "win64"
+        },
+        {
+            "id": "magiskboot",
+            "name": "Magisk Boot Tool",
+            "aliases": [
+                "magiskboot.exe"
+            ],
+            "required": false,
+            "platform": "win64",
+            "note": "For boot image unpack/repack and Magisk patching"
+        },
+        {
+            "id": "unpackbootimg",
+            "name": "Unpack Boot Image",
+            "aliases": [
+                "unpackbootimg.exe",
+                "unpack_bootimg.py"
+            ],
+            "required": false,
+            "platform": "win64"
+        },
+        {
+            "id": "mkbootimg",
+            "name": "Make Boot Image",
+            "aliases": [
+                "mkbootimg.exe",
+                "mkbootimg.py"
+            ],
+            "required": false,
+            "platform": "win64"
+        },
+        {
+            "id": "aapt2",
+            "name": "Android Asset Packaging Tool 2",
+            "aliases": [
+                "aapt2.exe"
+            ],
+            "required": false,
+            "platform": "win64",
+            "note": "For APK metadata parsing in Debloater"
+        },
+        {
+            "id": "adb",
+            "name": "Android Debug Bridge",
+            "aliases": [
+                "adb.exe"
+            ],
+            "required": false,
+            "platform": "win64",
+            "note": "For ADB-assisted Magisk patching"
         }
-    ]
+    ],
+    "download_note": "Download tools from Android SDK, AOSP build tools, or community sources. Place in third_party/tools/win64/"
 }

@@ -4,8 +4,12 @@
 # Core UI
 PyQt5>=5.15.0
 
+# Utilities
+send2trash>=1.8.0  # For Recycle Bin support
+
 # Build
 pyinstaller>=5.0
 
 # Optional - for development
 # pytest>=7.0
+# androguard>=3.3.5  # For APK metadata parsing
