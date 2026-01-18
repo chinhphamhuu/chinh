@@ -39,11 +39,17 @@ class ProjectConfig:
     # Input file
     input_file: str = ""
     
+    # Input type: rockchip_update / android_super / partition_image
+    input_type: str = ""
+    
     # Build presets per partition (Phase 2)
     build_presets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     
     # Debloated apps list
     debloated_apps: List[str] = field(default_factory=list)
+    
+    # Extra metadata (flexible storage)
+    extra: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> dict:
         return asdict(self)

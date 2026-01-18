@@ -1,6 +1,7 @@
 """
-Pipeline - Demo pipeline cho Import, Extract, Patch, Build
-Tạo marker files để verify
+Pipeline - REAL Pipeline cho Import, Extract, Patch, Build
+Không demo, không tạo file giả.
+Gọi engines thật: rockchip_update_engine, super_image_engine
 """
 import time
 from pathlib import Path
@@ -52,20 +53,42 @@ def pipeline_import(project: Project,
         dest = project.in_dir / source_file.name
         log.info(f"[IMPORT] Copying to: {dest}")
         
-        # Simulate copy progress
-        for i in range(0, 101, 20):
-            if _check_cancel(_cancel_token, "IMPORT"):
-                return TaskResult.cancelled()
-            time.sleep(0.1)  # Demo delay
-            log.info(f"[IMPORT] Progress: {i}%")
+        # Copy with progress logging
+        file_size = source_file.stat().st_size
+        copied = 0
+        chunk_size = 1024 * 1024 * 10  # 10MB chunks
         
-        safe_copy(source_file, dest, overwrite=True)
+        with open(source_file, 'rb') as src, open(dest, 'wb') as dst:
+            while True:
+                if _check_cancel(_cancel_token, "IMPORT"):
+                    dest.unlink(missing_ok=True)
+                    return TaskResult.cancelled()
+                
+                chunk = src.read(chunk_size)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                copied += len(chunk)
+                
+                progress = int(copied * 100 / file_size) if file_size else 100
+                if progress % 20 == 0:
+                    log.info(f"[IMPORT] Progress: {progress}%")
+        
+        # Determine input_type for project
+        input_type = "unknown"
+        if rom_type in [RomType.UPDATE_IMG, RomType.RELEASE_UPDATE_IMG]:
+            input_type = "rockchip_update"
+        elif rom_type == RomType.SUPER_IMG:
+            input_type = "android_super"
+        elif rom_type in [RomType.SPARSE_IMG, RomType.RAW_IMG]:
+            input_type = "partition_image"
         
         # Update project config
         project.update_config(
             imported=True,
             input_file=str(dest),
-            rom_type=rom_type.value
+            rom_type=rom_type.value,
+            input_type=input_type
         )
         
         elapsed = int((time.time() - start) * 1000)
@@ -86,80 +109,80 @@ def pipeline_import(project: Project,
 def pipeline_extract(project: Project,
                      _cancel_token: Event = None) -> TaskResult:
     """
-    Step 2: Extract ROM (Auto) - DEMO
-    Tạo thư mục out/Source và out/Image + UNPACK_OK.txt marker
+    Step 2: Extract ROM - REAL implementation
+    Gọi đúng engine dựa trên input_type
     """
     log = get_log_bus()
     start = time.time()
     
-    log.info("[EXTRACT] Bắt đầu Extract ROM (Auto)")
+    log.info("[EXTRACT] Bắt đầu Extract ROM")
     
     if _check_cancel(_cancel_token, "EXTRACT"):
         return TaskResult.cancelled()
     
     try:
-        # Check imported file
-        if not project.config.imported:
-            return TaskResult.error("Chưa import ROM file")
+        # Get input type from project config
+        input_type = project.config.extra.get("input_type", "")
+        rom_type = project.config.extra.get("rom_type", "")
         
-        input_file = Path(project.config.input_file)
-        if not input_file.exists():
-            return TaskResult.error(f"ROM file không tồn tại: {input_file}")
+        log.info(f"[EXTRACT] Input type: {input_type}")
         
-        log.info(f"[EXTRACT] ROM file: {input_file.name}")
-        log.info(f"[EXTRACT] ROM type: {project.config.rom_type}")
+        # Find input file
+        input_file = project.config.extra.get("input_file", "")
+        if input_file:
+            input_path = Path(input_file)
+        else:
+            # Auto-detect
+            candidates = list(project.in_dir.glob("*.img"))
+            if not candidates:
+                return TaskResult.error("Không tìm thấy ROM file trong input folder")
+            input_path = candidates[0]
         
-        # Demo: Create output structure
-        ensure_dir(project.source_dir)
-        ensure_dir(project.image_dir)
+        # Route to appropriate engine
+        if input_type == "rockchip_update" or rom_type in ["update.img", "release_update.img"]:
+            from .rockchip_update_engine import unpack_update_img
+            result = unpack_update_img(project, input_path, _cancel_token)
+            
+        elif input_type == "android_super" or rom_type == "super.img":
+            from .super_image_engine import unpack_super_img
+            result = unpack_super_img(project, input_path, _cancel_token)
+            
+        elif input_type == "partition_image":
+            # TODO: implement partition_image_engine
+            log.warning("[EXTRACT] Partition image mode chưa implement")
+            result = TaskResult.error("Partition image mode chưa hỗ trợ. Coming soon.")
+            
+        else:
+            # Try auto-detect based on filename
+            filename = input_path.name.lower()
+            if "update" in filename:
+                from .rockchip_update_engine import unpack_update_img
+                result = unpack_update_img(project, input_path, _cancel_token)
+            elif "super" in filename:
+                from .super_image_engine import unpack_super_img
+                result = unpack_super_img(project, input_path, _cancel_token)
+            else:
+                result = TaskResult.error(
+                    f"Không xác định được loại ROM: {input_path.name}. "
+                    "Hỗ trợ: update.img, super.img"
+                )
         
-        # Simulate extraction progress
-        steps = [
-            "Đang phân tích ROM header...",
-            "Đang extract firmware...",
-            "Đang extract partitions...",
-            "Đang phân tích Android images...",
-            "Đang tạo cấu trúc output...",
-        ]
+        if result.ok:
+            # Update project state
+            project.update_config(extracted=True)
+            
+            # Create marker for verification
+            marker = project.root_dir / "extract" / "EXTRACTED_OK.txt"
+            ensure_dir(marker.parent)
+            marker.write_text(f"Extracted at {timestamp()}\n", encoding='utf-8')
         
-        for i, step in enumerate(steps):
-            if _check_cancel(_cancel_token, "EXTRACT"):
-                return TaskResult.cancelled()
-            log.info(f"[EXTRACT] {step}")
-            time.sleep(0.2)  # Demo delay
+        return result
         
-        # Create demo files
-        demo_files = [
-            project.source_dir / "firmware.img.demo",
-            project.source_dir / "boot.img.demo",
-            project.source_dir / "system.img.demo",
-            project.image_dir / "partition_table.txt.demo",
-        ]
-        
-        for f in demo_files:
-            f.write_text(f"Demo file - Phase 2 will have real data\nCreated: {timestamp()}\n", encoding='utf-8')
-            log.info(f"[EXTRACT] Created: {f.name}")
-        
-        # Create marker file
-        marker = project.out_dir / "UNPACK_OK.txt"
-        marker.write_text(f"Extracted at: {timestamp()}\nROM: {input_file.name}\n", encoding='utf-8')
-        log.success(f"[EXTRACT] Marker: {marker}")
-        
-        # Update config
-        project.update_config(extracted=True)
-        
-        elapsed = int((time.time() - start) * 1000)
-        log.success(f"[EXTRACT] Hoàn thành trong {elapsed}ms")
-        
-        return TaskResult.success(
-            message="Extract thành công (Demo)",
-            artifacts=[str(f) for f in demo_files] + [str(marker)],
-            elapsed_ms=elapsed
-        )
-    
     except Exception as e:
         elapsed = int((time.time() - start) * 1000)
         log.error(f"[EXTRACT] Lỗi: {e}")
+        import traceback
+        log.debug(traceback.format_exc())
         return TaskResult.error(str(e), elapsed_ms=elapsed)
 
 
@@ -167,76 +190,71 @@ def pipeline_patch(project: Project,
                    patches: dict = None,
                    _cancel_token: Event = None) -> TaskResult:
     """
-    Step 3: Apply patches - DEMO
-    Lưu patch toggles vào project.json + tạo PATCH_OK.txt
+    Step 3: Apply patches
+    patches: dict với keys như 'disable_avb', 'debloat', 'magisk'
     """
     log = get_log_bus()
     start = time.time()
     
     patches = patches or {}
-    log.info(f"[PATCH] Bắt đầu apply patches: {len(patches)} toggles")
+    log.info(f"[PATCH] Bắt đầu apply patches: {list(patches.keys())}")
     
     if _check_cancel(_cancel_token, "PATCH"):
         return TaskResult.cancelled()
     
     try:
-        # Check extracted
-        if not project.config.extracted:
-            return TaskResult.error("Chưa extract ROM")
+        results = []
         
-        # Log patches to apply
-        for name, enabled in patches.items():
-            status = "BẬT" if enabled else "TẮT"
-            log.info(f"[PATCH] {name}: {status}")
+        # AVB patch (vbmeta only)
+        if patches.get("disable_avb"):
+            from .avb_manager import disable_avb_only
+            log.info("[PATCH] Patching vbmeta...")
+            result = disable_avb_only(project, _cancel_token)
+            results.append(("avb", result))
         
-        # Simulate patching
-        patch_steps = [
-            "Đang backup original files...",
-            "Đang phân tích system.img...",
-            "Đang apply patches...",
-            "Đang verify changes...",
-        ]
+        # Magisk patch
+        if patches.get("magisk"):
+            from .magisk_patcher import patch_boot_with_magisk
+            log.info("[PATCH] Patching boot với Magisk...")
+            result = patch_boot_with_magisk(
+                project,
+                patch_init_boot=True,  # Patch cả init_boot nếu có
+                _cancel_token=_cancel_token
+            )
+            results.append(("magisk", result))
         
-        for step in patch_steps:
-            if _check_cancel(_cancel_token, "PATCH"):
-                return TaskResult.cancelled()
-            log.info(f"[PATCH] {step}")
-            time.sleep(0.15)
+        # Debloat không apply ở đây, user chọn trong Debloater UI
         
-        # Update project config with patches
-        project.update_config(
-            patched=True,
-            patches=patches
-        )
+        # Check results
+        failed = [name for name, r in results if not r.ok]
+        if failed:
+            return TaskResult.error(f"Patch failed: {', '.join(failed)}")
+        
+        # Update state
+        project.update_config(patched=True)
         
         # Create marker
-        marker = project.out_dir / "PATCH_OK.txt"
-        lines = [f"Patched at: {timestamp()}", "Patches applied:"]
-        for name, enabled in patches.items():
-            lines.append(f"  - {name}: {'enabled' if enabled else 'disabled'}")
-        marker.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-        log.success(f"[PATCH] Marker: {marker}")
+        marker = project.root_dir / "extract" / "PATCHED_OK.txt"
+        marker.write_text(f"Patched at {timestamp()}\n", encoding='utf-8')
         
         elapsed = int((time.time() - start) * 1000)
-        log.success(f"[PATCH] Hoàn thành trong {elapsed}ms")
+        log.success("[PATCH] Patches applied successfully")
         
         return TaskResult.success(
-            message="Apply patches thành công (Demo)",
-            artifacts=[str(marker)],
+            message=f"Applied {len(results)} patches",
             elapsed_ms=elapsed
         )
-    
+        
     except Exception as e:
-        elapsed = int((time.time() - start) * 1000)
         log.error(f"[PATCH] Lỗi: {e}")
-        return TaskResult.error(str(e), elapsed_ms=elapsed)
+        return TaskResult.error(str(e))
 
 
 def pipeline_build(project: Project,
                    _cancel_token: Event = None) -> TaskResult:
     """
-    Step 4: Build output ROM - DEMO
-    Tạo out/update_patched.img dummy + BUILD_OK.txt
+    Step 4: Build output ROM
+    Gọi engine phù hợp để repack
     """
     log = get_log_bus()
     start = time.time()
@@ -247,106 +265,50 @@ def pipeline_build(project: Project,
         return TaskResult.cancelled()
     
     try:
-        # Check patched (or at least extracted)
-        if not project.config.extracted:
-            return TaskResult.error("Chưa extract ROM")
+        input_type = project.config.extra.get("input_type", "")
+        rom_type = project.config.extra.get("rom_type", "")
         
-        # Simulate build process
-        build_steps = [
-            "Đang chuẩn bị build environment...",
-            "Đang pack partitions...",
-            "Đang tạo firmware image...",
-            "Đang tính checksum...",
-            "Đang tạo output file...",
-        ]
+        # Check if super needs rebuild first
+        super_metadata = project.root_dir / "extract" / "super_metadata.json"
+        has_super = super_metadata.exists()
         
-        for i, step in enumerate(build_steps):
-            if _check_cancel(_cancel_token, "BUILD"):
-                return TaskResult.cancelled()
-            progress = int((i + 1) / len(build_steps) * 100)
-            log.info(f"[BUILD] [{progress}%] {step}")
-            time.sleep(0.2)
+        if has_super:
+            log.info("[BUILD] Có super.img, rebuild super trước...")
+            from .super_image_engine import build_super_img
+            
+            result = build_super_img(project, resize_mode="auto", _cancel_token=_cancel_token)
+            if not result.ok:
+                return result
+            log.info("[BUILD] Super rebuilt OK")
         
-        # Create dummy output
-        output_file = project.out_dir / "update_patched.img"
-        output_content = f"""Demo output file - Phase 2 sẽ có ROM thật
-Project: {project.name}
-ROM type: {project.config.rom_type}
-Patches: {project.config.patches}
-Built at: {timestamp()}
-"""
-        output_file.write_text(output_content, encoding='utf-8')
-        log.success(f"[BUILD] Output: {output_file}")
+        # Build based on input type
+        if input_type == "rockchip_update" or rom_type in ["update.img", "release_update.img"]:
+            from .rockchip_update_engine import repack_update_img
+            result = repack_update_img(project, _cancel_token=_cancel_token)
+            
+        elif input_type == "android_super" or rom_type == "super.img":
+            # Super already built above
+            if not has_super:
+                from .super_image_engine import build_super_img
+                result = build_super_img(project, _cancel_token=_cancel_token)
+            else:
+                result = TaskResult.success("Super.img đã build ở trên")
+                
+        else:
+            result = TaskResult.error(f"Không hỗ trợ build cho input_type: {input_type}")
         
-        # Create marker
-        marker = project.out_dir / "BUILD_OK.txt"
-        marker.write_text(f"Built at: {timestamp()}\nOutput: {output_file.name}\n", encoding='utf-8')
-        log.success(f"[BUILD] Marker: {marker}")
+        if result.ok:
+            project.update_config(built=True)
+            
+            # Create marker
+            marker = project.root_dir / "out" / "BUILD_OK.txt"
+            ensure_dir(marker.parent)
+            marker.write_text(f"Built at {timestamp()}\n", encoding='utf-8')
         
-        # Update config
-        project.update_config(built=True)
+        return result
         
-        elapsed = int((time.time() - start) * 1000)
-        log.success(f"[BUILD] Hoàn thành trong {elapsed}ms")
-        
-        return TaskResult.success(
-            message="Build thành công (Demo)",
-            artifacts=[str(output_file), str(marker)],
-            elapsed_ms=elapsed
-        )
-    
     except Exception as e:
-        elapsed = int((time.time() - start) * 1000)
         log.error(f"[BUILD] Lỗi: {e}")
-        return TaskResult.error(str(e), elapsed_ms=elapsed)
-
-
-def run_full_pipeline(project: Project,
-                      source_file: Path = None,
-                      patches: dict = None,
-                      _cancel_token: Event = None) -> TaskResult:
-    """
-    Chạy toàn bộ pipeline
-    """
-    log = get_log_bus()
-    log.info("=" * 50)
-    log.info("BẮT ĐẦU PIPELINE DEMO")
-    log.info("=" * 50)
-    
-    start = time.time()
-    
-    # Step 1: Import (if source_file provided)
-    if source_file:
-        result = pipeline_import(project, source_file, _cancel_token)
-        if not result.ok:
-            return result
-    
-    # Step 2: Extract
-    result = pipeline_extract(project, _cancel_token)
-    if not result.ok:
-        return result
-    
-    # Step 3: Patch
-    result = pipeline_patch(project, patches or {}, _cancel_token)
-    if not result.ok:
-        return result
-    
-    # Step 4: Build
-    result = pipeline_build(project, _cancel_token)
-    
-    elapsed = int((time.time() - start) * 1000)
-    
-    log.info("=" * 50)
-    if result.ok:
-        log.success(f"PIPELINE HOÀN THÀNH TRONG {elapsed}ms")
-    else:
-        log.error(f"PIPELINE THẤT BẠI SAU {elapsed}ms")
-    log.info("=" * 50)
-    
-    return TaskResult(
-        ok=result.ok,
-        code=result.code,
-        message=f"Pipeline {'thành công' if result.ok else 'thất bại'}",
-        artifacts=result.artifacts,
-        elapsed_ms=elapsed
-    )
+        import traceback
+        log.debug(traceback.format_exc())
+        return TaskResult.error(str(e))

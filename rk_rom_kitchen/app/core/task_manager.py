@@ -2,6 +2,7 @@
 Task Manager - QThreadPool wrapper để chạy tasks nền
 """
 import time
+import inspect
 import traceback
 from typing import Callable, Optional, Any
 from threading import Event
@@ -54,8 +55,10 @@ if HAS_QT:
             start_time = time.time()
             
             try:
-                # Inject cancel token vào kwargs nếu fn hỗ trợ
-                self.kwargs['_cancel_token'] = self._cancelled
+                # Inject cancel token vào kwargs chỉ nếu fn có param đó
+                sig = inspect.signature(self.fn)
+                if '_cancel_token' in sig.parameters:
+                    self.kwargs['_cancel_token'] = self._cancelled
                 
                 result = self.fn(*self.args, **self.kwargs)
                 
@@ -224,7 +227,10 @@ else:
             
             start_time = time.time()
             try:
-                kwargs['_cancel_token'] = Event()
+                # Inject cancel token chỉ nếu fn có param đó
+                sig = inspect.signature(fn)
+                if '_cancel_token' in sig.parameters:
+                    kwargs['_cancel_token'] = Event()
                 result = fn(*args, **kwargs)
                 if not isinstance(result, TaskResult):
                     result = TaskResult.success(str(result))
