@@ -1,7 +1,7 @@
 """
 Pipeline - REAL Pipeline cho Import, Extract, Patch, Build
 Không demo, không tạo file giả.
-Gọi engines thật: rockchip_update_engine, super_image_engine
+Gọi engines thật: rockchip_update_engine, super_image_engine, partition_image_engine
 """
 import time
 from pathlib import Path
@@ -12,7 +12,7 @@ from .task_defs import TaskResult
 from .project_store import Project
 from .logbus import get_log_bus
 from .utils import ensure_dir, safe_copy, timestamp
-from .detect import detect_rom_type, RomType
+from .detect import detect_rom_type, RomType, map_rom_type_to_input_type
 
 
 def _check_cancel(cancel_token: Optional[Event], step: str) -> bool:
@@ -33,6 +33,7 @@ def pipeline_import(project: Project,
     log = get_log_bus()
     start = time.time()
     
+    source_file = Path(source_file)
     log.info(f"[IMPORT] Bắt đầu import: {source_file.name}")
     
     if _check_cancel(_cancel_token, "IMPORT"):
@@ -42,14 +43,16 @@ def pipeline_import(project: Project,
         if not source_file.exists():
             return TaskResult.error(f"File không tồn tại: {source_file}")
         
-        # Detect ROM type
+        # Detect ROM type from header
         rom_type = detect_rom_type(source_file)
         log.info(f"[IMPORT] Loại ROM: {rom_type.value}")
         
-        if rom_type == RomType.UNKNOWN:
-            log.warning("[IMPORT] Không xác định được loại ROM, tiếp tục import...")
+        # Map to input_type for pipeline
+        input_type = map_rom_type_to_input_type(rom_type)
+        log.info(f"[IMPORT] Input type: {input_type}")
         
         # Copy to in/
+        ensure_dir(project.in_dir)
         dest = project.in_dir / source_file.name
         log.info(f"[IMPORT] Copying to: {dest}")
         
@@ -74,16 +77,7 @@ def pipeline_import(project: Project,
                 if progress % 20 == 0:
                     log.info(f"[IMPORT] Progress: {progress}%")
         
-        # Determine input_type for project
-        input_type = "unknown"
-        if rom_type in [RomType.UPDATE_IMG, RomType.RELEASE_UPDATE_IMG]:
-            input_type = "rockchip_update"
-        elif rom_type == RomType.SUPER_IMG:
-            input_type = "android_super"
-        elif rom_type in [RomType.SPARSE_IMG, RomType.RAW_IMG]:
-            input_type = "partition_image"
-        
-        # Update project config
+        # Update ProjectConfig fields DIRECTLY (không dùng extra)
         project.update_config(
             imported=True,
             input_file=str(dest),
@@ -110,7 +104,7 @@ def pipeline_extract(project: Project,
                      _cancel_token: Event = None) -> TaskResult:
     """
     Step 2: Extract ROM - REAL implementation
-    Gọi đúng engine dựa trên input_type
+    Gọi đúng engine dựa trên input_type (from config fields, NOT extra)
     """
     log = get_log_bus()
     start = time.time()
@@ -121,14 +115,14 @@ def pipeline_extract(project: Project,
         return TaskResult.cancelled()
     
     try:
-        # Get input type from project config
-        input_type = project.config.extra.get("input_type", "")
-        rom_type = project.config.extra.get("rom_type", "")
+        # Get input type from ProjectConfig fields DIRECTLY
+        input_type = project.config.input_type or ""
+        rom_type = project.config.rom_type or ""
+        input_file = project.config.input_file or ""
         
-        log.info(f"[EXTRACT] Input type: {input_type}")
+        log.info(f"[EXTRACT] Input type: {input_type}, ROM type: {rom_type}")
         
         # Find input file
-        input_file = project.config.extra.get("input_file", "")
         if input_file:
             input_path = Path(input_file)
         else:
@@ -138,45 +132,51 @@ def pipeline_extract(project: Project,
                 return TaskResult.error("Không tìm thấy ROM file trong input folder")
             input_path = candidates[0]
         
+        if not input_path.exists():
+            return TaskResult.error(f"Input file không tồn tại: {input_path}")
+        
         # Route to appropriate engine
-        if input_type == "rockchip_update" or rom_type in ["update.img", "release_update.img"]:
+        result = None
+        
+        if input_type == "rockchip_update":
             from .rockchip_update_engine import unpack_update_img
             result = unpack_update_img(project, input_path, _cancel_token)
             
-        elif input_type == "android_super" or rom_type == "super.img":
+        elif input_type == "android_super":
             from .super_image_engine import unpack_super_img
             result = unpack_super_img(project, input_path, _cancel_token)
             
         elif input_type == "partition_image":
-            # TODO: implement partition_image_engine
-            log.warning("[EXTRACT] Partition image mode chưa implement")
-            result = TaskResult.error("Partition image mode chưa hỗ trợ. Coming soon.")
+            from .partition_image_engine import extract_partition_image
+            result = extract_partition_image(project, input_path, _cancel_token)
             
         else:
-            # Try auto-detect based on filename
-            filename = input_path.name.lower()
-            if "update" in filename:
+            # Fallback: try to detect and route
+            log.warning(f"[EXTRACT] Unknown input_type '{input_type}', auto-detecting...")
+            rom_type_enum = detect_rom_type(input_path)
+            new_input_type = map_rom_type_to_input_type(rom_type_enum)
+            
+            if new_input_type == "rockchip_update":
                 from .rockchip_update_engine import unpack_update_img
                 result = unpack_update_img(project, input_path, _cancel_token)
-            elif "super" in filename:
+            elif new_input_type == "android_super":
                 from .super_image_engine import unpack_super_img
                 result = unpack_super_img(project, input_path, _cancel_token)
             else:
-                result = TaskResult.error(
-                    f"Không xác định được loại ROM: {input_path.name}. "
-                    "Hỗ trợ: update.img, super.img"
-                )
+                from .partition_image_engine import extract_partition_image
+                result = extract_partition_image(project, input_path, _cancel_token)
         
-        if result.ok:
+        if result and result.ok:
             # Update project state
             project.update_config(extracted=True)
             
             # Create marker for verification
-            marker = project.root_dir / "extract" / "EXTRACTED_OK.txt"
-            ensure_dir(marker.parent)
+            marker_dir = project.root_dir / "extract"
+            ensure_dir(marker_dir)
+            marker = marker_dir / "EXTRACTED_OK.txt"
             marker.write_text(f"Extracted at {timestamp()}\n", encoding='utf-8')
         
-        return result
+        return result or TaskResult.error("No engine matched")
         
     except Exception as e:
         elapsed = int((time.time() - start) * 1000)
@@ -223,8 +223,6 @@ def pipeline_patch(project: Project,
             )
             results.append(("magisk", result))
         
-        # Debloat không apply ở đây, user chọn trong Debloater UI
-        
         # Check results
         failed = [name for name, r in results if not r.ok]
         if failed:
@@ -234,7 +232,9 @@ def pipeline_patch(project: Project,
         project.update_config(patched=True)
         
         # Create marker
-        marker = project.root_dir / "extract" / "PATCHED_OK.txt"
+        marker_dir = project.root_dir / "extract"
+        ensure_dir(marker_dir)
+        marker = marker_dir / "PATCHED_OK.txt"
         marker.write_text(f"Patched at {timestamp()}\n", encoding='utf-8')
         
         elapsed = int((time.time() - start) * 1000)
@@ -265,12 +265,17 @@ def pipeline_build(project: Project,
         return TaskResult.cancelled()
     
     try:
-        input_type = project.config.extra.get("input_type", "")
-        rom_type = project.config.extra.get("rom_type", "")
+        # Get from ProjectConfig fields DIRECTLY
+        input_type = project.config.input_type or ""
+        rom_type = project.config.rom_type or ""
+        
+        log.info(f"[BUILD] Input type: {input_type}")
         
         # Check if super needs rebuild first
         super_metadata = project.root_dir / "extract" / "super_metadata.json"
         has_super = super_metadata.exists()
+        
+        result = None
         
         if has_super:
             log.info("[BUILD] Có super.img, rebuild super trước...")
@@ -282,11 +287,11 @@ def pipeline_build(project: Project,
             log.info("[BUILD] Super rebuilt OK")
         
         # Build based on input type
-        if input_type == "rockchip_update" or rom_type in ["update.img", "release_update.img"]:
+        if input_type == "rockchip_update":
             from .rockchip_update_engine import repack_update_img
             result = repack_update_img(project, _cancel_token=_cancel_token)
             
-        elif input_type == "android_super" or rom_type == "super.img":
+        elif input_type == "android_super":
             # Super already built above
             if not has_super:
                 from .super_image_engine import build_super_img
@@ -294,18 +299,23 @@ def pipeline_build(project: Project,
             else:
                 result = TaskResult.success("Super.img đã build ở trên")
                 
+        elif input_type == "partition_image":
+            from .partition_image_engine import repack_partition_image
+            result = repack_partition_image(project, _cancel_token=_cancel_token)
+            
         else:
             result = TaskResult.error(f"Không hỗ trợ build cho input_type: {input_type}")
         
-        if result.ok:
+        if result and result.ok:
             project.update_config(built=True)
             
             # Create marker
-            marker = project.root_dir / "out" / "BUILD_OK.txt"
-            ensure_dir(marker.parent)
+            out_dir = project.root_dir / "out"
+            ensure_dir(out_dir)
+            marker = out_dir / "BUILD_OK.txt"
             marker.write_text(f"Built at {timestamp()}\n", encoding='utf-8')
         
-        return result
+        return result or TaskResult.error("Build failed")
         
     except Exception as e:
         log.error(f"[BUILD] Lỗi: {e}")

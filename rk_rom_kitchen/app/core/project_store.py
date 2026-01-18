@@ -83,6 +83,11 @@ class Project:
         return self._path.exists()
     
     @property
+    def root_dir(self) -> Path:
+        """Alias for path - compatibility with engines"""
+        return self._path
+    
+    @property
     def config(self) -> ProjectConfig:
         if self._config is None:
             self._config = self.load_config()
