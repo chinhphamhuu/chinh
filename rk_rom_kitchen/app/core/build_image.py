@@ -6,6 +6,7 @@ Hỗ trợ output: raw / sparse / both
 import os
 import time
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
@@ -445,9 +446,9 @@ def build_image_bulk(
         
         log.info(f"[BUILD_BULK] [{i+1}/{len(partitions)}] {partition}")
         
-        # Get default config
+        # Get default config (MUST deepcopy to avoid mutable shared state)
         if partition in DEFAULT_PARTITION_CONFIGS:
-            config = DEFAULT_PARTITION_CONFIGS[partition]
+            config = deepcopy(DEFAULT_PARTITION_CONFIGS[partition])
         else:
             config = BuildImageConfig()
             config.mount_point = f"/{partition.replace('_a', '')}"

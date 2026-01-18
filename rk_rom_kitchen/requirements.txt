@@ -1,15 +1,14 @@
 # RK ROM Kitchen Requirements
 # Python 3.10+
+# Backward compatible - includes all deps
 
-# Core UI
+# Runtime (required)
 PyQt5>=5.15.0
+send2trash>=1.8.0
 
-# Utilities
-send2trash>=1.8.0  # For Recycle Bin support
-
-# Build
+# Build (optional)
 pyinstaller>=5.0
 
-# Optional - for development
+# Testing (optional)
 # pytest>=7.0
-# androguard>=3.3.5  # For APK metadata parsing
+# androguard>=3.3.5

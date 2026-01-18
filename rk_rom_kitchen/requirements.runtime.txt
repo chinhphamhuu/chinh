@@ -1,0 +1,5 @@
+# RK ROM Kitchen - Runtime Requirements
+# Install với: python -m pip install -r requirements.runtime.txt
+
+PyQt5>=5.15.0
+send2trash>=1.8.0

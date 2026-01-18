@@ -1,0 +1,11 @@
+# RK ROM Kitchen - Development Requirements
+# Install với: python -m pip install -r requirements.dev.txt
+
+# Build
+pyinstaller>=5.0
+
+# Testing
+pytest>=7.0
+
+# Optional - APK metadata parsing
+# androguard>=3.3.5

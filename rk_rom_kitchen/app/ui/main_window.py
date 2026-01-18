@@ -28,7 +28,7 @@ from .pages.page_build_image import BuildImagePage
 from .pages.page_avb import PageAVB
 from .pages.page_magisk import PageMagisk
 from .pages.page_boot_unpack import PageBootUnpack
-from .dialogs.debloater_dialog import DebloaterDialog
+# DebloaterDialog is lazy-imported when needed to avoid crash if send2trash missing
 
 
 class AboutPage(QWidget):
@@ -242,10 +242,19 @@ class MainWindow(QMainWindow):
             self._on_page_changed(action_id)
             return
         
-        # Debloater dialog
+        # Debloater dialog (lazy import)
         if action_id == "debloater":
-            dialog = DebloaterDialog(self)
-            dialog.exec_()
+            try:
+                from .dialogs.debloater_dialog import DebloaterDialog
+                dialog = DebloaterDialog(self)
+                dialog.exec_()
+            except ImportError as e:
+                QMessageBox.warning(
+                    self, "Missing Dependency",
+                    f"Debloater cần cài đặt 'send2trash'.\n"
+                    f"Chạy: pip install send2trash\n\nLỗi: {e}"
+                )
+                self._log.error(f"[DEBLOATER] Import error: {e}")
             return
         
         # Build actions
