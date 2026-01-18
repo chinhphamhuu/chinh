@@ -307,10 +307,9 @@ def extract_partition_image(
     if not valid:
         return TaskResult.error(f"Extract failed validation: {msg}")
     
-    # Save metadata
-    meta_dir = project.extract_dir
+    # Save per-partition metadata
+    meta_dir = project.extract_dir / "partition_metadata"
     ensure_dir(meta_dir)
-    meta_file = meta_dir / "partition_metadata.json"
     
     metadata = {
         "partition_name": partition_name,
@@ -321,7 +320,31 @@ def extract_partition_image(
         "out_source_path": str(output_dir),
         "file_count": len(list(output_dir.rglob("*")))
     }
+    
+    # Save individual partition metadata
+    meta_file = meta_dir / f"{partition_name}.json"
     meta_file.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+    
+    # Update partition index
+    index_file = project.extract_dir / "partition_index.json"
+    if index_file.exists():
+        try:
+            index = json.loads(index_file.read_text(encoding='utf-8'))
+        except:
+            index = {"partitions": []}
+    else:
+        index = {"partitions": []}
+    
+    # Add/update this partition in index
+    existing = [p for p in index["partitions"] if p.get("partition_name") != partition_name]
+    existing.append({
+        "partition_name": partition_name,
+        "fs_type": fs_type,
+        "was_sparse": was_sparse,
+        "out_source_path": str(output_dir)
+    })
+    index["partitions"] = existing
+    index_file.write_text(json.dumps(index, indent=2), encoding='utf-8')
     
     elapsed = int((time.time() - start) * 1000)
     

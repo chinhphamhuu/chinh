@@ -42,6 +42,18 @@ class ProjectConfig:
     # Input type: rockchip_update / android_super / partition_image
     input_type: str = ""
     
+    # Slot mode: auto / A / B / both
+    slot_mode: str = "auto"
+    
+    # Super resize mode: auto / strict
+    super_resize_mode: str = "auto"
+    
+    # Output format: raw / sparse
+    output_sparse: bool = False
+    
+    # Dirty flag for copy-through optimization
+    dirty: bool = False
+    
     # Build presets per partition (Phase 2)
     build_presets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     

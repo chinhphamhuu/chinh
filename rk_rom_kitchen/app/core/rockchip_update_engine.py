@@ -1,11 +1,15 @@
 """
 Rockchip Update Engine - REAL implementation cho update.img/release_update.img
-Không demo, không tạo file giả.
+OUTPUT CONTRACT:
+- Partitions images → project.out_image_dir/update/partitions/*.img
+- Metadata (parameter.txt, package-file) → project.out_image_dir/update/metadata/
+- Filesystem extracted → project.out_source_dir/<partition>/ (auto mode B)
 Toolchain: img_unpack/imgRePackerRK hoặc afptool/rkImageMaker
 """
 import os
 import sys
 import time
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,6 +24,14 @@ from .utils import ensure_dir, human_size
 from ..tools.registry import get_tool_registry
 
 
+# Partitions that should have filesystem extracted
+FS_PARTITIONS = [
+    "system", "vendor", "product", "odm", "system_ext",
+    "system_a", "vendor_a", "product_a", "odm_a", "system_ext_a",
+    "system_b", "vendor_b", "product_b", "odm_b", "system_ext_b",
+]
+
+
 @dataclass
 class UpdateMeta:
     """Metadata từ update.img"""
@@ -28,8 +40,9 @@ class UpdateMeta:
     has_super: bool = False
     has_boot: bool = False
     has_init_boot: bool = False
-    config_file: Optional[Path] = None
-    parameter_file: Optional[Path] = None
+    parameter_found: bool = False
+    package_file_found: bool = False
+    slot_mode: str = "auto"  # auto/A/B/both
 
 
 def run_tool(args: List[str], cwd: Path = None, timeout: int = 600) -> Tuple[int, str, str]:
@@ -64,12 +77,10 @@ def detect_update_img(input_path: Path) -> UpdateMeta:
         log.error(f"[UPDATE] File không tồn tại: {input_path}")
         return meta
     
-    # Check file header để xác định loại
     try:
         with open(input_path, 'rb') as f:
             header = f.read(16)
         
-        # Rockchip update.img signature: RKIM (RK Image Maker) hoặc RKFW
         if header[:4] in [b'RKFW', b'RKIM', b'RKAF']:
             log.info(f"[UPDATE] Detected Rockchip firmware: {header[:4].decode(errors='ignore')}")
         else:
@@ -85,7 +96,6 @@ def preflight_check(project: Project) -> Tuple[bool, str]:
     log = get_log_bus()
     registry = get_tool_registry()
     
-    # Check required tools
     required_tools = ["img_unpack", "rkImageMaker"]
     fallback_tools = ["afptool", "rkImageMaker"]
     
@@ -94,17 +104,16 @@ def preflight_check(project: Project) -> Tuple[bool, str]:
     
     if not has_primary and not has_fallback:
         missing = [t for t in required_tools if not registry.is_available(t)]
-        return False, f"Thiếu tools: {', '.join(missing)}. Chạy Tools Doctor để kiểm tra."
+        return False, f"Thiếu tools: {', '.join(missing)}. Vui lòng thêm vào tools/win64/."
     
-    # Check disk space (estimate ~3x input size needed)
+    # Check disk space
     input_dir = project.in_dir
-    rom_files = list(input_dir.glob("*.img")) + list(input_dir.glob("update*.img"))
+    rom_files = list(input_dir.glob("*.img"))
     if rom_files:
         total_size = sum(f.stat().st_size for f in rom_files if f.exists())
         required = total_size * 3
         
         try:
-            import shutil
             free = shutil.disk_usage(project.root_dir).free
             if free < required:
                 return False, f"Không đủ dung lượng disk. Cần: {human_size(required)}, Còn: {human_size(free)}"
@@ -114,11 +123,36 @@ def preflight_check(project: Project) -> Tuple[bool, str]:
     return True, "OK"
 
 
-def unpack_with_img_unpack(
-    input_path: Path,
-    output_dir: Path,
-    _cancel_token: Event = None
-) -> TaskResult:
+def filter_partitions_by_slot(partitions: List[str], slot_mode: str) -> List[str]:
+    """Filter partitions dựa trên slot_mode"""
+    if slot_mode == "both":
+        return partitions
+    
+    result = []
+    for p in partitions:
+        name = p.lower()
+        if slot_mode == "A":
+            # Only _a or no suffix
+            if name.endswith("_a") or (not name.endswith("_b")):
+                result.append(p)
+        elif slot_mode == "B":
+            # Only _b or no suffix (fallback)
+            if name.endswith("_b"):
+                result.append(p)
+            elif not name.endswith("_a"):
+                # Non-slot partition, check if _b exists
+                result.append(p)
+        else:  # auto
+            # Prefer _a, fallback to non-suffix
+            if name.endswith("_a"):
+                result.append(p)
+            elif not name.endswith("_b"):
+                result.append(p)
+    
+    return result
+
+
+def unpack_with_img_unpack(input_path: Path, output_dir: Path) -> TaskResult:
     """Unpack bằng img_unpack/imgRePackerRK"""
     log = get_log_bus()
     registry = get_tool_registry()
@@ -129,33 +163,22 @@ def unpack_with_img_unpack(
     
     ensure_dir(output_dir)
     
-    # img_unpack syntax: img_unpack <update.img> <output_dir>
     args = [img_unpack, input_path, output_dir]
-    
     log.info(f"[UPDATE] Đang unpack với img_unpack...")
     code, stdout, stderr = run_tool(args, timeout=1800)
     
     if code != 0:
-        log.error(f"[UPDATE] img_unpack failed: {stderr}")
         return TaskResult.error(f"img_unpack failed (code {code}): {stderr[:200]}")
     
-    # Verify output
-    extracted = list(output_dir.glob("*.img")) + list(output_dir.glob("*"))
+    extracted = list(output_dir.glob("*.img")) + list(output_dir.glob("*.bin"))
     if not extracted:
         return TaskResult.error("img_unpack không tạo file output")
     
     log.success(f"[UPDATE] Unpacked {len(extracted)} files")
-    return TaskResult.success(
-        message=f"Unpacked {len(extracted)} files",
-        artifacts=[str(output_dir)]
-    )
+    return TaskResult.success(message=f"Unpacked {len(extracted)} files")
 
 
-def unpack_with_afptool(
-    input_path: Path,
-    output_dir: Path,
-    _cancel_token: Event = None
-) -> TaskResult:
+def unpack_with_afptool(input_path: Path, output_dir: Path) -> TaskResult:
     """Unpack bằng afptool (fallback)"""
     log = get_log_bus()
     registry = get_tool_registry()
@@ -166,31 +189,29 @@ def unpack_with_afptool(
     
     ensure_dir(output_dir)
     
-    # afptool -unpack <update.img> <output_dir>
     args = [afptool, "-unpack", input_path, output_dir]
-    
     log.info(f"[UPDATE] Đang unpack với afptool...")
     code, stdout, stderr = run_tool(args, timeout=1800)
     
     if code != 0:
-        log.error(f"[UPDATE] afptool failed: {stderr}")
         return TaskResult.error(f"afptool failed (code {code}): {stderr[:200]}")
     
     log.success(f"[UPDATE] afptool unpack completed")
-    return TaskResult.success(
-        message="Unpacked với afptool",
-        artifacts=[str(output_dir)]
-    )
+    return TaskResult.success(message="Unpacked với afptool")
 
 
 def unpack_update_img(
     project: Project,
     input_path: Path = None,
+    auto_extract_fs: bool = True,
     _cancel_token: Event = None
 ) -> TaskResult:
     """
-    Unpack update.img với auto-detect toolchain
-    Output: project.root_dir / extract / partitions /
+    Unpack update.img với auto-detect toolchain + auto filesystem extraction
+    OUTPUT CONTRACT:
+    - Partitions → out/Image/update/partitions/*.img
+    - Metadata → out/Image/update/metadata/
+    - Filesystem (mode B) → out/Source/<partition>/
     """
     log = get_log_bus()
     start = time.time()
@@ -204,42 +225,134 @@ def unpack_update_img(
             return TaskResult.error("Không tìm thấy file update.img trong input folder")
         input_path = candidates[0]
     
-    log.info(f"[UPDATE] Unpack: {input_path.name}")
+    log.info(f"[UPDATE] Unpack: {input_path.name} ({human_size(input_path.stat().st_size)})")
     
     # Preflight
     ok, msg = preflight_check(project)
     if not ok:
         return TaskResult.error(msg)
     
-    # Output dir
-    output_dir = project.root_dir / "extract" / "partitions"
-    ensure_dir(output_dir)
+    # OUTPUT CONTRACT: out/Image/update/partitions
+    update_out_dir = project.out_image_dir / "update"
+    partitions_dir = update_out_dir / "partitions"
+    metadata_dir = update_out_dir / "metadata"
+    ensure_dir(partitions_dir)
+    ensure_dir(metadata_dir)
     
     # Try img_unpack first
     registry = get_tool_registry()
     
     result = None
     if registry.is_available("img_unpack"):
-        result = unpack_with_img_unpack(input_path, output_dir, _cancel_token)
+        result = unpack_with_img_unpack(input_path, partitions_dir)
     
     # Fallback to afptool
     if result is None or not result.ok:
         if registry.is_available("afptool"):
             log.info("[UPDATE] Thử fallback với afptool...")
-            result = unpack_with_afptool(input_path, output_dir, _cancel_token)
+            result = unpack_with_afptool(input_path, partitions_dir)
     
     if result is None:
         return TaskResult.error("Không có tool nào khả dụng để unpack update.img")
     
-    if result.ok:
-        # Scan extracted partitions
-        partitions = [f.stem for f in output_dir.glob("*.img")]
-        log.info(f"[UPDATE] Partitions: {', '.join(partitions[:10])}")
-        
-        # Update project state
-        result.elapsed_ms = int((time.time() - start) * 1000)
+    if not result.ok:
+        return result
     
-    return result
+    # Scan extracted partitions
+    all_partitions = [f.stem for f in partitions_dir.glob("*.img")]
+    log.info(f"[UPDATE] Extracted partitions: {', '.join(all_partitions[:15])}")
+    
+    # Move metadata files
+    for meta_file in ["parameter.txt", "parameter", "package-file", "PACKAGE-FILE"]:
+        src = partitions_dir / meta_file
+        if src.exists():
+            dst = metadata_dir / meta_file
+            shutil.copy2(src, dst)
+            log.info(f"[UPDATE] Saved metadata: {meta_file}")
+    
+    # Detect vbmeta files
+    vbmeta_files = [p for p in all_partitions if "vbmeta" in p.lower()]
+    if vbmeta_files:
+        log.info(f"[UPDATE] Detected vbmeta: {vbmeta_files}")
+    
+    # Check for super.img inside update
+    has_super = any("super" in p.lower() for p in all_partitions)
+    
+    # Get slot_mode from project config
+    slot_mode = getattr(project.config, 'slot_mode', 'auto')
+    
+    # Filter partitions by slot
+    partitions_to_process = filter_partitions_by_slot(all_partitions, slot_mode)
+    
+    # Save update metadata
+    update_meta = {
+        "all_partitions": all_partitions,
+        "processed_partitions": partitions_to_process,
+        "vbmeta_files": vbmeta_files,
+        "has_super": has_super,
+        "slot_mode": slot_mode,
+        "source_file": str(input_path),
+    }
+    meta_json = metadata_dir / "update_manifest.json"
+    meta_json.write_text(json.dumps(update_meta, indent=2), encoding='utf-8')
+    
+    # Auto filesystem extraction (mode B)
+    fs_extracted = []
+    if auto_extract_fs:
+        log.info("[UPDATE] Bắt đầu extract filesystem (mode B)...")
+        
+        # If super.img exists, unpack super first
+        super_img = partitions_dir / "super.img"
+        if super_img.exists():
+            log.info("[UPDATE] Detected super.img, unpacking super partitions...")
+            from .super_image_engine import unpack_super_img
+            
+            # Super output goes to out/Image/super/partitions
+            super_result = unpack_super_img(project, super_img, _cancel_token)
+            if super_result.ok:
+                # Get super partitions and extract their filesystems
+                super_partitions_dir = project.out_image_dir / "super" / "partitions"
+                if super_partitions_dir.exists():
+                    for pimg in super_partitions_dir.glob("*.img"):
+                        pname = pimg.stem.lower()
+                        base_name = pname.replace("_a", "").replace("_b", "")
+                        if base_name in ["system", "vendor", "product", "odm", "system_ext"]:
+                            log.info(f"[UPDATE] Extracting filesystem: {pimg.name}")
+                            try:
+                                from .partition_image_engine import extract_partition_image
+                                fs_result = extract_partition_image(project, pimg, _cancel_token)
+                                if fs_result.ok:
+                                    fs_extracted.append(pname)
+                            except Exception as e:
+                                log.warning(f"[UPDATE] Cannot extract {pname}: {e}")
+        else:
+            # No super, extract directly from update partitions
+            for pname in partitions_to_process:
+                base_name = pname.lower().replace("_a", "").replace("_b", "")
+                if base_name in ["system", "vendor", "product", "odm", "system_ext"]:
+                    pimg = partitions_dir / f"{pname}.img"
+                    if pimg.exists():
+                        log.info(f"[UPDATE] Extracting filesystem: {pimg.name}")
+                        try:
+                            from .partition_image_engine import extract_partition_image
+                            fs_result = extract_partition_image(project, pimg, _cancel_token)
+                            if fs_result.ok:
+                                fs_extracted.append(pname)
+                        except Exception as e:
+                            log.warning(f"[UPDATE] Cannot extract {pname}: {e}")
+    
+    elapsed = int((time.time() - start) * 1000)
+    
+    log.success(f"[UPDATE] Hoàn tất Unpack. Output: {update_out_dir}")
+    log.info(f"[UPDATE] → Partitions: out/Image/update/partitions/ ({len(all_partitions)} files)")
+    if fs_extracted:
+        log.info(f"[UPDATE] → Filesystem: out/Source/ ({', '.join(fs_extracted)})")
+    
+    return TaskResult.success(
+        message=f"Unpacked {len(all_partitions)} partitions, extracted {len(fs_extracted)} filesystems",
+        artifacts=[str(partitions_dir)],
+        elapsed_ms=elapsed
+    )
 
 
 def repack_update_img(
@@ -249,13 +362,20 @@ def repack_update_img(
 ) -> TaskResult:
     """
     Repack partitions thành update.img
-    Input: project.root_dir / extract / partitions /
-    Output: project.root_dir / out / update_patched.img
+    INPUT: out/Image/update/partitions/
+    OUTPUT: out/Image/update/update_patched.img
     """
     log = get_log_bus()
     start = time.time()
     
-    partitions_dir = project.root_dir / "extract" / "partitions"
+    # INPUT: out/Image/update/partitions
+    partitions_dir = project.out_image_dir / "update" / "partitions"
+    metadata_dir = project.out_image_dir / "update" / "metadata"
+    
+    # Fallback to legacy path
+    if not partitions_dir.exists():
+        partitions_dir = project.extract_dir / "partitions"
+    
     if not partitions_dir.exists():
         return TaskResult.error("Chưa extract partitions. Hãy unpack trước.")
     
@@ -265,30 +385,29 @@ def repack_update_img(
     
     log.info(f"[UPDATE] Repack {len(partitions)} partitions...")
     
-    output_dir = project.root_dir / "out"
+    # OUTPUT: out/Image/update/update_patched.img
+    output_dir = project.out_image_dir / "update"
     ensure_dir(output_dir)
     output_path = output_dir / output_name
     
     registry = get_tool_registry()
     
-    # Try rkImageMaker
     rkimage = registry.get_tool_path("rkImageMaker")
     if not rkimage:
-        return TaskResult.error("Tool rkImageMaker không tìm thấy. Chạy Tools Doctor.")
+        return TaskResult.error("Tool rkImageMaker không tìm thấy. Vui lòng thêm vào tools/win64/.")
     
-    # rkImageMaker needs: parameter file, package-file, output
-    # If we have these from extract, use them; otherwise generate minimal
-    param_file = partitions_dir / "parameter.txt"
-    package_file = partitions_dir / "package-file"
+    # Get parameter and package-file from metadata or generate
+    param_file = metadata_dir / "parameter.txt" if metadata_dir.exists() else partitions_dir / "parameter.txt"
+    package_file = metadata_dir / "package-file" if metadata_dir.exists() else partitions_dir / "package-file"
     
     if not param_file.exists():
         log.warning("[UPDATE] parameter.txt không tìm thấy, tạo minimal...")
-        # Create minimal parameter (ASSUMPTION: basic Rockchip parameter)
         param_content = """FIRMWARE_VER:1.0
 MACHINE_MODEL:RK
 MANUFACTURER:Rockchip
 CMDLINE:mtdparts=rk29xxnand:0x00000000@0x00004000(uboot),0x00002000@0x00004000(trust),-@0x00000000(rootfs)
 """
+        param_file = partitions_dir / "parameter.txt"
         param_file.write_text(param_content, encoding='utf-8')
     
     if not package_file.exists():
@@ -296,6 +415,7 @@ CMDLINE:mtdparts=rk29xxnand:0x00000000@0x00004000(uboot),0x00002000@0x00004000(t
         lines = ["# Package-File auto-generated", "package-file package-file"]
         for p in partitions:
             lines.append(f"{p.stem}\t{p.name}")
+        package_file = partitions_dir / "package-file"
         package_file.write_text('\n'.join(lines), encoding='utf-8')
     
     # Run rkImageMaker
@@ -305,7 +425,6 @@ CMDLINE:mtdparts=rk29xxnand:0x00000000@0x00004000(uboot),0x00002000@0x00004000(t
     code, stdout, stderr = run_tool(args, cwd=partitions_dir, timeout=1800)
     
     if code != 0:
-        log.error(f"[UPDATE] rkImageMaker failed: {stderr}")
         return TaskResult.error(f"rkImageMaker failed: {stderr[:200]}")
     
     if not output_path.exists():
@@ -314,10 +433,11 @@ CMDLINE:mtdparts=rk29xxnand:0x00000000@0x00004000(uboot),0x00002000@0x00004000(t
     elapsed = int((time.time() - start) * 1000)
     size = output_path.stat().st_size
     
-    log.success(f"[UPDATE] Repacked: {output_path.name} ({human_size(size)})")
+    log.success(f"[UPDATE] Hoàn tất Repack. Output: {output_path}")
+    log.info(f"[UPDATE] → out/Image/update/{output_name} ({human_size(size)})")
     
     return TaskResult.success(
-        message=f"Repacked {output_name} ({human_size(size)})",
+        message=f"Repacked → out/Image/update/{output_name} ({human_size(size)})",
         artifacts=[str(output_path)],
         elapsed_ms=elapsed
     )
