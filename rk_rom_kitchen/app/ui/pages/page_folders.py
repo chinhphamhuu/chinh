@@ -1,12 +1,18 @@
 """
 Folders Page - Trang quản lý thư mục project
+OUTPUT CONTRACT:
+- in/ (Input)
+- out/Source/ (Filesystem extracted)
+- out/Image/ (Images output)
+- extract/ (Intermediate)
+- temp/, logs/, config/
 """
 import os
 import subprocess
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QMessageBox
+    QListWidget, QListWidgetItem, QMessageBox, QGroupBox
 )
 from PyQt5.QtCore import Qt
 
@@ -19,6 +25,7 @@ class PageFolders(QWidget):
     """
     Folders page:
     - Navigate project folders
+    - Quick open buttons for common paths
     - Open in explorer
     """
     
@@ -38,6 +45,29 @@ class PageFolders(QWidget):
         title = QLabel(t("page_folders_title"))
         title.setProperty("heading", True)
         layout.addWidget(title)
+        
+        # Quick access buttons
+        quick_group = QGroupBox("Mở nhanh")
+        quick_layout = QHBoxLayout(quick_group)
+        
+        self._btn_open_source = QPushButton("out/Source")
+        self._btn_open_source.clicked.connect(lambda: self._open_quick("source"))
+        quick_layout.addWidget(self._btn_open_source)
+        
+        self._btn_open_image = QPushButton("out/Image")
+        self._btn_open_image.clicked.connect(lambda: self._open_quick("image"))
+        quick_layout.addWidget(self._btn_open_image)
+        
+        self._btn_open_update = QPushButton("out/Image/update")
+        self._btn_open_update.clicked.connect(lambda: self._open_quick("update"))
+        quick_layout.addWidget(self._btn_open_update)
+        
+        self._btn_open_super = QPushButton("out/Image/super")
+        self._btn_open_super.clicked.connect(lambda: self._open_quick("super"))
+        quick_layout.addWidget(self._btn_open_super)
+        
+        quick_layout.addStretch()
+        layout.addWidget(quick_group)
         
         # Folder list
         self._folder_list = QListWidget()
@@ -60,6 +90,39 @@ class PageFolders(QWidget):
         
         self.refresh()
     
+    def _open_quick(self, folder_type: str):
+        """Open quick access folder"""
+        project = self._projects.current
+        if not project:
+            QMessageBox.warning(self, t("dialog_warning"), "Chưa chọn project")
+            return
+        
+        if folder_type == "source":
+            path = project.out_source_dir
+        elif folder_type == "image":
+            path = project.out_image_dir
+        elif folder_type == "update":
+            path = project.out_image_dir / "update"
+        elif folder_type == "super":
+            path = project.out_image_dir / "super"
+        else:
+            return
+        
+        self._open_folder_path(path)
+    
+    def _open_folder_path(self, path: Path):
+        """Open path in file explorer"""
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+            self._log.info(f"Đã tạo thư mục: {path}")
+        
+        if os.name == 'nt':
+            os.startfile(str(path))
+        else:
+            subprocess.run(['xdg-open', str(path)])
+        
+        self._log.info(f"Mở thư mục: {path}")
+    
     def refresh(self):
         """Refresh folder list"""
         self._folder_list.clear()
@@ -69,13 +132,16 @@ class PageFolders(QWidget):
             self._folder_list.addItem("Chưa có project được chọn")
             return
         
-        # Add folder items
+        # Add folder items - OUTPUT CONTRACT
         folders = [
             ("📁 in/ (Input ROM)", project.in_dir),
             ("📁 out/ (Output)", project.out_dir),
-            ("  📁 Source/", project.source_dir),
-            ("  📁 Image/", project.image_dir),
-            ("📁 temp/", project.temp_dir),
+            ("  📁 out/Source/ (Filesystem)", project.out_source_dir),
+            ("  📁 out/Image/ (Images)", project.out_image_dir),
+            ("    📁 out/Image/update/", project.out_image_dir / "update"),
+            ("    📁 out/Image/super/", project.out_image_dir / "super"),
+            ("📁 extract/ (Intermediate)", project.extract_dir),
+            ("📁 temp/ (Working)", project.temp_dir),
             ("📁 logs/", project.logs_dir),
             ("📁 config/", project.config_dir),
         ]
@@ -84,9 +150,11 @@ class PageFolders(QWidget):
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, str(path))
             
-            # Gray out if doesn't exist
+            # Color based on exists + has content
             if not path.exists():
                 item.setForeground(Qt.gray)
+            elif path.is_dir() and any(path.iterdir()):
+                item.setForeground(Qt.green)
             
             self._folder_list.addItem(item)
     
@@ -107,19 +175,7 @@ class PageFolders(QWidget):
             return
         
         path = Path(path_str)
-        
-        if not path.exists():
-            # Create if doesn't exist
-            path.mkdir(parents=True, exist_ok=True)
-            self._log.info(f"Đã tạo thư mục: {path}")
-        
-        # Open in explorer
-        if os.name == 'nt':
-            os.startfile(str(path))
-        else:
-            subprocess.run(['xdg-open', str(path)])
-        
-        self._log.info(f"Mở thư mục: {path}")
+        self._open_folder_path(path)
     
     def update_translations(self):
         """Update UI khi đổi ngôn ngữ"""
