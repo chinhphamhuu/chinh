@@ -40,7 +40,7 @@ run.bat
 python -m app.tools.registry
 ```
 
-### Đặt tools vào: `third_party/tools/win64/`
+### Đặt tools vào: `tools/win64/`
 
 | Tool ID | Aliases | Required | Purpose |
 |---------|---------|----------|---------|

@@ -10,7 +10,7 @@ pip install -r requirements.txt
 ```
 
 ### 2. Download Tools
-Download và đặt vào `third_party/tools/win64/`:
+Download và đặt vào `tools/win64/`:
 - **Required**: img_unpack.exe, afptool.exe, lpunpack.exe, lpmake.exe, simg2img.exe, img2simg.exe, avbtool.py, make_ext4fs.exe
 - **Optional**: magiskboot.exe, mkfs.erofs.exe, aapt2.exe
 
@@ -115,7 +115,7 @@ rk_rom_kitchen/
 │   ├── tools/
 │   │   └── registry.py      # Tool detection
 │   └── ui/
-├── third_party/tools/win64/ # CLI tools
+├── tools/win64/            # CLI tools (bundled)
 └── requirements.txt
 ```
 
@@ -127,7 +127,7 @@ rk_rom_kitchen/
 ```bash
 python -m app.tools.registry
 ```
-Download missing tools, đặt vào third_party/tools/win64/
+Download missing tools, đặt vào tools/win64/
 
 ### Build Image failed
 - Check source folder tồn tại: out/Source/<partition>/

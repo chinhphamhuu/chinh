@@ -156,5 +156,5 @@
             "note": "For ADB-assisted Magisk patching"
         }
     ],
-    "download_note": "Download tools from Android SDK, AOSP build tools, or community sources. Place in third_party/tools/win64/"
+    "download_note": "Download tools from Android SDK, AOSP build tools, or community sources. Place in tools/win64/"
 }

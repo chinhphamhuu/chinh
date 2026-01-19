@@ -198,7 +198,7 @@ class ToolRegistry:
         if bundled_dir.is_dir():
             paths.append(bundled_dir)
         
-        # 3. Legacy third_party path (fallback)
+        # 3. Legacy third_party path (fallback - không khuyến nghị)
         legacy_dir = app_root / 'third_party' / 'tools' / 'win64'
         if legacy_dir.is_dir():
             paths.append(legacy_dir)
@@ -384,7 +384,7 @@ class ToolRegistry:
         missing = self.get_missing_tools()
         if missing:
             lines.append("")
-            lines.append("Missing tools (download and place in third_party/tools/win64/):")
+            lines.append("Missing tools (download and place in tools/win64/):")
             for t in missing:
                 aliases = TOOL_DEFINITIONS.get(t, {}).get("aliases", [])
                 lines.append(f"  - {t}: {', '.join(aliases[:2])}")
