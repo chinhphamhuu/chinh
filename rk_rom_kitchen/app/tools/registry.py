@@ -381,14 +381,44 @@ class ToolRegistry:
         lines.append("-" * 50)
         lines.append(f"Summary: {available_count}/{len(self._tools)} tools available")
         
+        # Load manifest to determine required/optional
+        manifest_required = {}
+        try:
+            manifest_path = Path(__file__).parent.parent.parent / 'tools_manifest' / 'manifest.json'
+            if manifest_path.exists():
+                import json
+                with open(manifest_path, 'r', encoding='utf-8') as f:
+                    manifest = json.load(f)
+                for t in manifest.get('tools', []):
+                    manifest_required[t.get('id', '')] = t.get('required', False)
+        except Exception:
+            pass
+        
         missing = self.get_missing_tools()
         if missing:
-            lines.append("")
-            lines.append("Missing tools (download and place in tools/win64/):")
-            for t in missing:
-                aliases = TOOL_DEFINITIONS.get(t, {}).get("aliases", [])
-                lines.append(f"  - {t}: {', '.join(aliases[:2])}")
+            # Split into required and optional
+            required_missing = [t for t in missing if manifest_required.get(t, True)]
+            optional_missing = [t for t in missing if not manifest_required.get(t, True)]
+            
+            if required_missing:
+                lines.append("")
+                lines.append("Required Missing (bắt buộc - download và đặt vào tools/win64/):")
+                for t in required_missing:
+                    aliases = TOOL_DEFINITIONS.get(t, {}).get("aliases", [])
+                    lines.append(f"  - {t}: {', '.join(aliases[:2])}")
+            
+            if optional_missing:
+                lines.append("")
+                lines.append("Optional Missing (không bắt buộc):")
+                for t in optional_missing:
+                    aliases = TOOL_DEFINITIONS.get(t, {}).get("aliases", [])
+                    note = ""
+                    if t == "debugfs":
+                        note = " (ext4 extraction sẽ bị giới hạn)"
+                    lines.append(f"  - {t}: {', '.join(aliases[:2])}{note}")
         
+        lines.append("")
+        lines.append("Đường dẫn tools mặc định: tools/win64/")
         lines.append("=" * 50)
         
         return "\n".join(lines)

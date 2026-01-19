@@ -45,21 +45,20 @@ desktop.ini
 
 # Logs
 *.log
-logs/
 
 # Local settings
 settings.json
 
-# Temp files
+# Project runtime output (not bundled tools)
 temp/
 tmp/
 *.tmp
-
-# Tools (user should place their own)
-third_party/tools/win64/*.exe
-!third_party/tools/win64/PLACE_TOOLS_HERE.txt
 
 # Test output
 .pytest_cache/
 .coverage
 htmlcov/
+
+# NOTE: tools/win64/*.exe are BUNDLED in repo, NOT ignored
+# Legacy third_party folder (deprecated, không dùng nữa)
+third_party/

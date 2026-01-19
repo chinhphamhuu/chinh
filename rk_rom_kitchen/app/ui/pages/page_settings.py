@@ -150,10 +150,10 @@ class PageSettings(QWidget):
     
     def _on_download_tools(self):
         """
-        Download tools - Phase 2 stub
-        Chỉ đọc manifest và log, KHÔNG download thật
+        Danh sách tools (tham khảo)
+        Đọc manifest và hiển thị, KHÔNG download thật
         """
-        self._log.info("=== TẢI TOOLS (Phase 2) ===")
+        self._log.info("=== DANH SÁCH TOOLS (THAM KHẢO) ===")
         
         # Read manifest
         manifest_file = Path(__file__).parent.parent.parent.parent / 'tools_manifest' / 'manifest.json'
@@ -164,26 +164,44 @@ class PageSettings(QWidget):
                     manifest = json.load(f)
                 
                 tools = manifest.get('tools', [])
+                download_note = manifest.get('download_note', 'Đặt tools vào tools/win64/')
+                
                 self._log.info(f"Manifest chứa {len(tools)} tools:")
+                self._log.info(f"Gợi ý: {download_note}")
+                self._log.info("")
                 
                 for tool in tools:
-                    name = tool.get('name', '')
-                    exe = tool.get('exe', '')
-                    self._log.info(f"  - {name}: {exe}")
+                    tool_id = tool.get('id', 'unknown')
+                    name = tool.get('name', tool_id)
+                    aliases = tool.get('aliases', [])
+                    required = tool.get('required', False)
+                    note = tool.get('note', '')
+                    
+                    req_text = "Required" if required else "Optional"
+                    aliases_text = ', '.join(aliases[:2]) if aliases else ''
+                    
+                    self._log.info(f"  [{req_text}] {name}")
+                    if aliases_text:
+                        self._log.info(f"      Aliases: {aliases_text}")
+                    if note:
+                        self._log.info(f"      Note: {note}")
+                
+                self._log.info("")
+                self._log.info("Đặt file tools vào: tools/win64/")
                 
             except Exception as e:
                 self._log.error(f"Lỗi đọc manifest: {e}")
         else:
             self._log.warning(f"Không tìm thấy manifest: {manifest_file}")
         
-        # Show "Coming soon" dialog
+        # Show info dialog
         QMessageBox.information(
             self,
             t("dialog_info"),
-            t("dialog_coming_soon")
+            "Danh sách tools đã được log.\nĐặt tools vào: tools/win64/"
         )
         
-        self._log.info("=== KẾT THÚC - Coming soon ===")
+        self._log.info("=== KẾT THÚC ===")
     
     def update_translations(self):
         """Update UI khi đổi ngôn ngữ"""

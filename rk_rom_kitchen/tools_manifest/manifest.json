@@ -154,6 +154,27 @@
             "required": false,
             "platform": "win64",
             "note": "For ADB-assisted Magisk patching"
+        },
+        {
+            "id": "extract_erofs",
+            "name": "EROFS Extractor",
+            "aliases": [
+                "extract.erofs.exe",
+                "extract_erofs.exe"
+            ],
+            "required": true,
+            "platform": "win64",
+            "note": "For extracting EROFS filesystem partitions"
+        },
+        {
+            "id": "debugfs",
+            "name": "EXT4 Debugfs Tool",
+            "aliases": [
+                "debugfs.exe"
+            ],
+            "required": false,
+            "platform": "win64",
+            "note": "For extracting EXT4 filesystem (optional - ext4 extraction sẽ bị giới hạn nếu thiếu tool này)"
         }
     ],
     "download_note": "Download tools from Android SDK, AOSP build tools, or community sources. Place in tools/win64/"
