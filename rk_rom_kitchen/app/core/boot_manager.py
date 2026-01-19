@@ -3,6 +3,7 @@ Boot Manager - Unpack/Repack boot images
 REAL Implementation sử dụng magiskboot hoặc unpackbootimg/mkbootimg
 """
 import os
+import sys
 import time
 import shutil
 import subprocess
@@ -121,8 +122,8 @@ def unpack_with_unpackbootimg(
         ensure_dir(output_dir)
         
         # Build command
-        if str(unpackbootimg).endswith('.py'):
-            args = ["python", str(unpackbootimg)]
+        if str(unpackbootimg).lower().endswith('.py'):
+            args = [sys.executable, str(unpackbootimg)]
         else:
             args = [str(unpackbootimg)]
         
@@ -264,8 +265,8 @@ def repack_with_mkbootimg(
             return TaskResult.error("Kernel not found in unpacked dir")
         
         # Build command
-        if str(mkbootimg).endswith('.py'):
-            args = ["python", str(mkbootimg)]
+        if str(mkbootimg).lower().endswith('.py'):
+            args = [sys.executable, str(mkbootimg)]
         else:
             args = [str(mkbootimg)]
         

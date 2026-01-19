@@ -5,6 +5,7 @@ REAL Implementation:
 - Patch fstab (dm-verity, AVB, forceencrypt, fileencryption)
 """
 import os
+import sys
 import re
 import time
 import shutil
@@ -110,8 +111,8 @@ def create_disabled_vbmeta(
         
         if avbtool:
             # Determine if Python script
-            if str(avbtool).endswith('.py'):
-                args = ["python", str(avbtool)]
+            if str(avbtool).lower().endswith('.py'):
+                args = [sys.executable, str(avbtool)]
             else:
                 args = [str(avbtool)]
             

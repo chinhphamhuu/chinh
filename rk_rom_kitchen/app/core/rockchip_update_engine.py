@@ -366,7 +366,8 @@ def unpack_update_img(
                 if super_partitions_dir.exists():
                     for pimg in super_partitions_dir.glob("*.img"):
                         pname = pimg.stem.lower()
-                        base_name = pname.replace("_a", "").replace("_b", "")
+                        # Slot suffix strip: chỉ cắt _a/_b ở cuối
+                        base_name = pname[:-2] if pname.endswith("_a") or pname.endswith("_b") else pname
                         if base_name in ["system", "vendor", "product", "odm", "system_ext"]:
                             log.info(f"[UPDATE] Extracting filesystem: {pimg.name}")
                             try:
@@ -379,7 +380,9 @@ def unpack_update_img(
         else:
             # No super, extract directly from update partitions
             for pname in partitions_to_process:
-                base_name = pname.lower().replace("_a", "").replace("_b", "")
+                # Slot suffix strip: chỉ cắt _a/_b ở cuối
+                pname_lower = pname.lower()
+                base_name = pname_lower[:-2] if pname_lower.endswith("_a") or pname_lower.endswith("_b") else pname_lower
                 if base_name in ["system", "vendor", "product", "odm", "system_ext"]:
                     pimg = partitions_dir / f"{pname}.img"
                     if pimg.exists():

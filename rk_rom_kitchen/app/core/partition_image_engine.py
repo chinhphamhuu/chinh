@@ -702,6 +702,7 @@ def repack_partition_image(
     
     if fs_type == "ext4":
         # Use best-effort builder với e2fsdroid / make_ext4fs
+        # Builder đã xử lý raw/sparse conversion và trả về artifacts chính xác
         result = build_ext4_image_best_effort(
             project=project,
             partition_name=partition_name,
@@ -713,53 +714,64 @@ def repack_partition_image(
         if not result.ok:
             return result
         
-        # Continue with validation and sparse handling below
-        final_path = Path(result.artifacts[0]) if result.artifacts else output_path
+        # Trust builder artifacts - RETURN EARLY
+        final_path = Path(result.artifacts[0]) if result.artifacts else None
+        if not final_path or not final_path.exists() or final_path.stat().st_size == 0:
+            return TaskResult.error("Builder không tạo output hợp lệ")
+        
+        elapsed = int((time.time() - start) * 1000)
+        log.success(f"[PARTITION] Hoàn tất Repack ext4: {final_path.name}")
+        return TaskResult.success(
+            message=f"Repacked {partition_name} → {final_path.name}",
+            artifacts=[str(final_path)],
+            elapsed_ms=elapsed
+        )
             
     elif fs_type == "erofs":
         mkfs_erofs = registry.get_tool_path("mkfs_erofs")
         if not mkfs_erofs:
             return TaskResult.error("Thiếu tool mkfs.erofs.exe. Vui lòng kiểm tra Tools Doctor.")
         
-        args = [mkfs_erofs, output_path, source_dir]
+        # Naming convention chuẩn: raw.img / patched.img
+        raw_path = out_img_dir / f"{partition_name}_patched.raw.img"
+        sparse_path = out_img_dir / f"{partition_name}_patched.img"
+        
+        # mkfs.erofs tạo raw trước
+        args = [mkfs_erofs, str(raw_path), str(source_dir)]
         log.info("[PARTITION] Running mkfs.erofs...")
         code, stdout, stderr = run_tool(args, timeout=1800)
         
         if code != 0:
             return TaskResult.error(f"mkfs.erofs failed: {stderr[:200]}")
+        
+        if not raw_path.exists() or raw_path.stat().st_size == 0:
+            return TaskResult.error("mkfs.erofs không tạo output hợp lệ")
+        
+        # Convert to sparse if requested
+        final_path = raw_path
+        if output_sparse:
+            img2simg = registry.get_tool_path("img2simg")
+            if img2simg:
+                args = [str(img2simg), str(raw_path), str(sparse_path)]
+                code, _, stderr = run_tool(args, timeout=600)
+                if code == 0 and sparse_path.exists() and sparse_path.stat().st_size > 0:
+                    raw_path.unlink()  # Remove raw
+                    final_path = sparse_path
+                    log.info(f"[PARTITION] Converted to sparse: {human_size(sparse_path.stat().st_size)}")
+                else:
+                    log.warning(f"[PARTITION] img2simg failed, giữ RAW: {stderr[:100]}")
+            else:
+                log.warning("[PARTITION] img2simg không có, giữ RAW image")
+        
+        elapsed = int((time.time() - start) * 1000)
+        log.success(f"[PARTITION] Hoàn tất Repack erofs: {final_path.name}")
+        return TaskResult.success(
+            message=f"Repacked {partition_name} → {final_path.name}",
+            artifacts=[str(final_path)],
+            elapsed_ms=elapsed
+        )
     else:
         return TaskResult.error(f"Không hỗ trợ repack fs_type: {fs_type}")
-    
-    # Validate output
-    if not output_path.exists():
-        return TaskResult.error("Repack không tạo output image")
-    
-    if output_path.stat().st_size == 0:
-        return TaskResult.error("Repack tạo file rỗng")
-    
-    # Convert to sparse if requested
-    final_path = output_path
-    if output_sparse:
-        img2simg = registry.get_tool_path("img2simg")
-        if img2simg:
-            sparse_path = out_img_dir / f"{partition_name}_patched_sparse.img"
-            args = [img2simg, output_path, sparse_path]
-            code, _, _ = run_tool(args)
-            if code == 0 and sparse_path.exists():
-                output_path.unlink()  # Remove raw
-                final_path = sparse_path
-    
-    elapsed = int((time.time() - start) * 1000)
-    size = final_path.stat().st_size
-    
-    log.success(f"[PARTITION] Hoàn tất Repack. Output: {final_path}")
-    log.info(f"[PARTITION] → out/Image/{final_path.name} ({human_size(size)})")
-    
-    return TaskResult.success(
-        message=f"Repacked {partition_name} → out/Image/{final_path.name}",
-        artifacts=[str(final_path)],
-        elapsed_ms=elapsed
-    )
 
 
 def repack_all_partitions(
