@@ -221,10 +221,20 @@ def unpack_super_img(
     partitions_out_dir = super_out_dir / "partitions"
     ensure_dir(partitions_out_dir)
     
-    # Save metadata
-    meta_file = super_out_dir / "super_metadata.json"
-    meta_file.write_text(json.dumps(meta.to_dict(), indent=2), encoding='utf-8')
-    log.info(f"[SUPER] Saved metadata: {meta_file}")
+    # Save metadata DUAL-WRITE (compatibility)
+    meta_dict = meta.to_dict()
+    
+    # Path 1: out/Image/super/super_metadata.json (primary)
+    meta_file1 = super_out_dir / "super_metadata.json"
+    meta_file1.write_text(json.dumps(meta_dict, indent=2), encoding='utf-8')
+    log.info(f"[SUPER] Saved metadata: {meta_file1}")
+    
+    # Path 2: extract/super_metadata.json (legacy/compat)
+    extract_dir = project.extract_dir
+    ensure_dir(extract_dir)
+    meta_file2 = extract_dir / "super_metadata.json"
+    meta_file2.write_text(json.dumps(meta_dict, indent=2), encoding='utf-8')
+    log.debug(f"[SUPER] Compat metadata: {meta_file2}")
     
     # Check if sparse
     is_sparse = False

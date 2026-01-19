@@ -168,20 +168,12 @@ def extract_erofs_real(img_path: Path, output_dir: Path) -> TaskResult:
     log = get_log_bus()
     registry = get_tool_registry()
     
-    # Look for extract.erofs in bundled tools
-    erofs_tool = None
-    tools_dir = Path(__file__).parent.parent.parent / "tools" / "win64"
-    
-    for name in ["extract.erofs.exe", "extract_erofs.exe", "fsck.erofs.exe"]:
-        candidate = tools_dir / name
-        if candidate.exists():
-            erofs_tool = candidate
-            break
-    
+    # Use ToolRegistry to find extract_erofs
+    erofs_tool = registry.get_tool_path("extract_erofs")
     if not erofs_tool:
         return TaskResult.error(
             "Thiếu tool extract.erofs.exe để extract erofs. "
-            "Vui lòng thêm extract.erofs.exe vào tools/win64."
+            "Vui lòng thêm extract.erofs.exe vào tools/win64 và chạy Tools Doctor."
         )
     
     ensure_dir(output_dir)
@@ -358,9 +350,22 @@ def extract_partition_image(
     )
 
 
+def get_partition_list(project: Project) -> list:
+    """Get list of extracted partitions from index"""
+    index_file = project.extract_dir / "partition_index.json"
+    if not index_file.exists():
+        return []
+    
+    try:
+        index = json.loads(index_file.read_text(encoding='utf-8'))
+        return index.get("partitions", [])
+    except:
+        return []
+
+
 def repack_partition_image(
     project: Project,
-    partition_name: str = None,
+    partition_name: str,
     output_sparse: bool = False,
     _cancel_token: Event = None
 ) -> TaskResult:
@@ -368,21 +373,36 @@ def repack_partition_image(
     Repack partition image from extracted folder
     OUTPUT CONTRACT:
     - Image → project.out_image_dir/<partition_name>_patched.img
+    
+    MUST provide partition_name. Không chấp nhận None.
     """
     log = get_log_bus()
     start = time.time()
     
-    # Load metadata
-    meta_file = project.extract_dir / "partition_metadata.json"
+    # Validate partition_name
+    if not partition_name:
+        return TaskResult.error(
+            "Chưa chọn partition. Vui lòng chọn trong dropdown hoặc dùng Repack All."
+        )
+    
+    # Load per-partition metadata
+    meta_file = project.extract_dir / "partition_metadata" / f"{partition_name}.json"
     if not meta_file.exists():
-        return TaskResult.error("Không tìm thấy metadata. Hãy extract trước.")
+        # Fallback: legacy path
+        legacy_meta = project.extract_dir / "partition_metadata.json"
+        if legacy_meta.exists():
+            meta_file = legacy_meta
+        else:
+            return TaskResult.error(
+                f"Không tìm thấy metadata cho partition '{partition_name}'. "
+                "Hãy Extract partition này trước."
+            )
     
     try:
         meta = json.loads(meta_file.read_text(encoding='utf-8'))
     except Exception as e:
         return TaskResult.error(f"Lỗi đọc metadata: {e}")
     
-    partition_name = partition_name or meta.get("partition_name", "partition")
     fs_type = meta.get("fs_type", "unknown")
     
     log.info(f"[PARTITION] Repacking: {partition_name} ({fs_type})")
@@ -433,6 +453,9 @@ def repack_partition_image(
     if not output_path.exists():
         return TaskResult.error("Repack không tạo output image")
     
+    if output_path.stat().st_size == 0:
+        return TaskResult.error("Repack tạo file rỗng")
+    
     # Convert to sparse if requested
     final_path = output_path
     if output_sparse:
@@ -454,5 +477,56 @@ def repack_partition_image(
     return TaskResult.success(
         message=f"Repacked {partition_name} → out/Image/{final_path.name}",
         artifacts=[str(final_path)],
+        elapsed_ms=elapsed
+    )
+
+
+def repack_all_partitions(
+    project: Project,
+    output_sparse: bool = False,
+    _cancel_token: Event = None
+) -> TaskResult:
+    """
+    Repack ALL extracted partitions
+    """
+    log = get_log_bus()
+    start = time.time()
+    
+    partitions = get_partition_list(project)
+    if not partitions:
+        return TaskResult.error(
+            "Không tìm thấy partition nào. Hãy Extract trước."
+        )
+    
+    log.info(f"[PARTITION] Repack All: {len(partitions)} partitions")
+    
+    results = []
+    for p in partitions:
+        pname = p.get("partition_name")
+        if not pname:
+            continue
+        
+        result = repack_partition_image(project, pname, output_sparse, _cancel_token)
+        results.append((pname, result))
+        
+        if not result.ok:
+            log.warning(f"[PARTITION] Failed: {pname} - {result.message}")
+    
+    succeeded = [name for name, r in results if r.ok]
+    failed = [name for name, r in results if not r.ok]
+    
+    elapsed = int((time.time() - start) * 1000)
+    
+    if failed:
+        log.warning(f"[PARTITION] Repack All: {len(succeeded)} OK, {len(failed)} FAILED")
+        return TaskResult.error(
+            f"Repack All: {len(succeeded)} succeeded, {len(failed)} failed ({', '.join(failed)})",
+            elapsed_ms=elapsed
+        )
+    
+    log.success(f"[PARTITION] Repack All: {len(succeeded)} partitions OK")
+    
+    return TaskResult.success(
+        message=f"Repacked {len(succeeded)} partitions → out/Image/",
         elapsed_ms=elapsed
     )
