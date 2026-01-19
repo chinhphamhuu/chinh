@@ -192,18 +192,16 @@ def build_ext4_image_best_effort(
     Build ext4 image với best-effort metadata preservation
     
     Priority:
-    1. e2fsdroid (khi có file_contexts + fs_config + tool available)
+    1. e2fsdroid (khi có file_contexts + tool available)
+       - STRICT: nếu fail -> fallback make_ext4fs
     2. make_ext4fs fallback
     
-    Args:
-        project: Project instance
-        partition_name: Tên partition (system_a, vendor_a, ...)
-        source_dir: Thư mục source chứa files
-        output_path: Đường dẫn output .img
-        output_sparse: True để output sparse image
-        
+    Naming convention:
+    - Raw output: <partition>_patched.raw.img
+    - Sparse output: <partition>_patched.img
+    
     Returns:
-        TaskResult with success/error
+        TaskResult with artifacts = [final_output_path]
     """
     log = get_log_bus()
     registry = get_tool_registry()
@@ -223,120 +221,157 @@ def build_ext4_image_best_effort(
         log.warning("[EXT4] file_contexts: không tìm thấy")
     
     if fs_config:
-        log.info(f"[EXT4] fs_config: {fs_config.name}")
+        log.info(f"[EXT4] fs_config: {fs_config.name} (sẽ áp dụng nếu e2fsdroid hỗ trợ)")
     else:
-        log.warning("[EXT4] fs_config: không tìm thấy")
+        log.info("[EXT4] fs_config: không tìm thấy")
     
     # Get tools
     e2fsdroid = registry.get_tool_path("e2fsdroid")
     make_ext4fs = registry.get_tool_path("make_ext4fs")
     
+    if not make_ext4fs and not e2fsdroid:
+        return TaskResult.error("Thiếu cả e2fsdroid và make_ext4fs. Vui lòng kiểm tra Tools Doctor.")
+    
     # Estimate size
     total_size = sum(f.stat().st_size for f in source_dir.rglob("*") if f.is_file())
-    # Add 15% overhead + 256MB minimum + 4K alignment
+    # Add 15% overhead + 64MB buffer + 256MB minimum + 4K alignment
     img_size = max(int(total_size * 1.15) + 64 * 1024 * 1024, 256 * 1024 * 1024)
     img_size = (img_size + 4095) & ~4095  # 4K align
     
-    # Decide engine
-    use_e2fsdroid = False
-    if e2fsdroid and file_contexts:
-        # e2fsdroid requires at least file_contexts to be useful
-        use_e2fsdroid = True
-        log.info("[EXT4] Engine: e2fsdroid (với SELinux contexts)")
-    elif make_ext4fs:
-        log.info("[EXT4] Engine: make_ext4fs (fallback)")
-        if not file_contexts:
-            log.warning(
-                "[EXT4] Thiếu file_contexts → SELinux contexts có thể không đúng. "
-                "Có thể gây bootloop trên Android 10/11/12."
-            )
-    else:
-        return TaskResult.error("Thiếu cả e2fsdroid và make_ext4fs. Vui lòng kiểm tra Tools Doctor.")
-    
     # Ensure output dir
     ensure_dir(output_path.parent)
-    temp_raw = output_path.with_suffix(".raw.img") if output_sparse else output_path
     
-    if use_e2fsdroid:
-        # e2fsdroid workflow:
-        # 1. Create empty ext4 image with make_ext4fs
-        # 2. Use e2fsdroid to populate with metadata
+    # Naming convention
+    base_name = output_path.stem.replace("_patched", "").replace(".raw", "")
+    raw_path = output_path.parent / f"{base_name}_patched.raw.img"
+    sparse_path = output_path.parent / f"{base_name}_patched.img"
+    
+    build_success = False
+    used_engine = ""
+    
+    # Try e2fsdroid first if conditions met
+    if e2fsdroid and file_contexts and make_ext4fs:
+        log.info("[EXT4] Engine: e2fsdroid (với SELinux contexts)")
+        used_engine = "e2fsdroid"
         
-        if not make_ext4fs:
-            # Fallback: try e2fsdroid alone (some versions can create images)
-            log.warning("[EXT4] make_ext4fs không có, thử e2fsdroid alone...")
-        
-        # Create base image
-        if make_ext4fs:
-            args_base = [make_ext4fs, "-l", str(img_size), "-a", mount_point, temp_raw, source_dir]
-            log.debug(f"[EXT4] Creating base image: {temp_raw.name}")
-            code, stdout, stderr = run_tool(args_base, timeout=1800)
-            
-            if code != 0:
-                return TaskResult.error(f"make_ext4fs failed: {stderr[:300]}")
-        
-        # Apply e2fsdroid for SELinux contexts
-        args_e2fs = [e2fsdroid, "-e", "-a", f"/{mount_point}", "-S", file_contexts]
-        
-        if fs_config:
-            args_e2fs.extend(["-C", fs_config])
-        
-        args_e2fs.append(temp_raw)
-        
-        log.debug(f"[EXT4] Applying e2fsdroid...")
-        code, stdout, stderr = run_tool(args_e2fs, timeout=1800)
+        # Step 1: Create base ext4 image with make_ext4fs
+        # make_ext4fs creates the initial image, e2fsdroid populates metadata
+        args_base = [
+            make_ext4fs, 
+            "-l", str(img_size), 
+            "-a", mount_point,  # mount point without slash
+            str(raw_path), 
+            str(source_dir)
+        ]
+        log.debug(f"[EXT4] Step 1: Creating base image with make_ext4fs...")
+        code, stdout, stderr = run_tool(args_base, timeout=1800)
         
         if code != 0:
-            log.warning(f"[EXT4] e2fsdroid warning (có thể bỏ qua): {stderr[:200]}")
-            # e2fsdroid may return non-zero but still work
-    else:
-        # make_ext4fs only
-        args = [make_ext4fs, "-l", str(img_size), "-a", mount_point, temp_raw, source_dir]
+            log.error(f"[EXT4] make_ext4fs failed (step 1): {stderr[:300]}")
+            # Don't fail yet, will try fallback
+        else:
+            # Step 2: Apply e2fsdroid for SELinux contexts
+            # e2fsdroid args: -e (no journal) -a mount_point -S file_contexts -f source_dir <image>
+            args_e2fs = [
+                str(e2fsdroid),
+                "-e",                           # no journal mode
+                "-a", f"/{mount_point}",        # android mount point WITH slash
+                "-S", str(file_contexts),       # SELinux file_contexts
+                "-f", str(source_dir),          # source directory (REQUIRED!)
+            ]
+            
+            # Add fs_config if available
+            if fs_config:
+                args_e2fs.extend(["-C", str(fs_config)])
+            
+            args_e2fs.append(str(raw_path))  # target image
+            
+            log.debug(f"[EXT4] Step 2: Applying e2fsdroid SELinux contexts...")
+            code, stdout, stderr = run_tool(args_e2fs, timeout=1800)
+            
+            if code != 0:
+                # e2fsdroid FAILED - this is an ERROR, not warning
+                log.error(f"[EXT4] e2fsdroid FAILED (code={code}): {stderr[:300]}")
+                log.warning("[EXT4] Fallback sang make_ext4fs only...")
+                # Remove failed output and try fallback
+                if raw_path.exists():
+                    raw_path.unlink()
+            else:
+                build_success = True
+                log.debug("[EXT4] e2fsdroid completed successfully")
+    
+    # Fallback to make_ext4fs only if e2fsdroid failed or unavailable
+    if not build_success:
+        if not make_ext4fs:
+            return TaskResult.error("e2fsdroid thất bại và make_ext4fs không có. Không thể build ext4.")
         
-        # Add file_contexts if available (make_ext4fs -S flag)
+        log.info("[EXT4] Engine: make_ext4fs (fallback)")
+        used_engine = "make_ext4fs"
+        
+        if not file_contexts:
+            log.warning(
+                "[EXT4] Thiếu file_contexts → SELinux contexts có thể sai. "
+                "Có thể gây bootloop trên Android 10/11/12."
+            )
+        
+        # make_ext4fs args
+        args = [
+            str(make_ext4fs),
+            "-l", str(img_size),
+            "-a", mount_point,  # mount point without slash
+        ]
+        
+        # Add file_contexts if available
         if file_contexts:
-            args.insert(-2, "-S")
-            args.insert(-2, str(file_contexts))
+            args.extend(["-S", str(file_contexts)])
+        
+        args.extend([str(raw_path), str(source_dir)])
         
         log.debug(f"[EXT4] Running make_ext4fs...")
         code, stdout, stderr = run_tool(args, timeout=1800)
         
         if code != 0:
             return TaskResult.error(f"make_ext4fs failed: {stderr[:300]}")
+        
+        build_success = True
     
     # Validate raw output
-    if not temp_raw.exists() or temp_raw.stat().st_size == 0:
-        return TaskResult.error(f"Build ext4 thất bại: output không tồn tại hoặc rỗng")
+    if not raw_path.exists() or raw_path.stat().st_size == 0:
+        return TaskResult.error(f"Build ext4 thất bại: {raw_path.name} không tồn tại hoặc rỗng")
     
-    raw_size = temp_raw.stat().st_size
+    raw_size = raw_path.stat().st_size
+    log.debug(f"[EXT4] Raw image: {human_size(raw_size)}")
     
     # Convert to sparse if requested
-    final_path = temp_raw
+    final_path = raw_path
     if output_sparse:
         img2simg = registry.get_tool_path("img2simg")
         if img2simg:
-            sparse_path = output_path
-            args = [img2simg, temp_raw, sparse_path]
+            args = [str(img2simg), str(raw_path), str(sparse_path)]
             code, _, stderr = run_tool(args, timeout=600)
             
-            if code == 0 and sparse_path.exists():
-                temp_raw.unlink()  # Remove raw
+            if code == 0 and sparse_path.exists() and sparse_path.stat().st_size > 0:
+                raw_path.unlink()  # Remove raw after successful conversion
                 final_path = sparse_path
                 log.info(f"[EXT4] Converted to sparse: {human_size(sparse_path.stat().st_size)}")
             else:
-                log.warning(f"[EXT4] img2simg failed, giữ raw: {stderr[:100]}")
-                final_path = temp_raw
+                log.warning(f"[EXT4] img2simg failed, giữ RAW: {stderr[:100]}")
+                final_path = raw_path
         else:
-            log.warning("[EXT4] img2simg không có, giữ raw image")
+            log.warning("[EXT4] img2simg không có, giữ RAW image")
+            final_path = raw_path
+    
+    # Final validation
+    if not final_path.exists() or final_path.stat().st_size == 0:
+        return TaskResult.error(f"Build ext4 thất bại: output final không hợp lệ")
     
     elapsed = int((time.time() - start) * 1000)
     final_size = final_path.stat().st_size
     
-    engine_name = "e2fsdroid" if use_e2fsdroid else "make_ext4fs"
-    log.success(f"[EXT4] Hoàn tất ({engine_name}): {final_path.name} ({human_size(final_size)})")
+    log.success(f"[EXT4] Hoàn tất ({used_engine}): {final_path.name} ({human_size(final_size)})")
     
     return TaskResult.success(
-        message=f"Built ext4 ({engine_name}): {final_path.name}",
+        message=f"Built ext4 ({used_engine}): {final_path.name}",
         artifacts=[str(final_path)],
         elapsed_ms=elapsed
     )
