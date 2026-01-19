@@ -251,10 +251,13 @@ def pipeline_patch(project: Project,
 
 
 def pipeline_build(project: Project,
+                   selected_partition: str = None,
                    _cancel_token: Event = None) -> TaskResult:
     """
     Step 4: Build output ROM
     Gọi engine phù hợp để repack
+    
+    selected_partition: nếu partition_image mode, chỉ định partition cần build (optional)
     """
     log = get_log_bus()
     start = time.time()
@@ -268,12 +271,17 @@ def pipeline_build(project: Project,
         # Get from ProjectConfig fields DIRECTLY
         input_type = project.config.input_type or ""
         rom_type = project.config.rom_type or ""
+        output_sparse = getattr(project.config, 'output_sparse', False)
         
         log.info(f"[BUILD] Input type: {input_type}")
         
-        # Check if super needs rebuild first
-        super_metadata = project.root_dir / "extract" / "super_metadata.json"
-        has_super = super_metadata.exists()
+        # Check super metadata (dual path support)
+        super_meta_paths = [
+            project.out_image_dir / "super" / "super_metadata.json",
+            project.extract_dir / "super_metadata.json",
+            project.out_image_dir / "update" / "metadata" / "super_metadata.json",
+        ]
+        has_super = any(p.exists() for p in super_meta_paths)
         
         result = None
         
@@ -281,7 +289,8 @@ def pipeline_build(project: Project,
             log.info("[BUILD] Có super.img, rebuild super trước...")
             from .super_image_engine import build_super_img
             
-            result = build_super_img(project, resize_mode="auto", _cancel_token=_cancel_token)
+            resize_mode = getattr(project.config, 'super_resize_mode', 'auto')
+            result = build_super_img(project, resize_mode=resize_mode, output_sparse=output_sparse, _cancel_token=_cancel_token)
             if not result.ok:
                 return result
             log.info("[BUILD] Super rebuilt OK")
@@ -300,13 +309,32 @@ def pipeline_build(project: Project,
                 result = TaskResult.success("Super.img đã build ở trên")
                 
         elif input_type == "partition_image":
-            from .partition_image_engine import repack_partition_image
-            result = repack_partition_image(project, _cancel_token=_cancel_token)
+            from .partition_image_engine import repack_partition_image, repack_all_partitions, get_partition_list
+            
+            if selected_partition:
+                # Build specific partition
+                log.info(f"[BUILD] Repack Partition: {selected_partition}")
+                result = repack_partition_image(project, selected_partition, output_sparse, _cancel_token)
+            else:
+                # Build all extracted partitions
+                partitions = get_partition_list(project)
+                if not partitions:
+                    return TaskResult.error(
+                        "Chưa có dữ liệu extract. Hãy Extract partition trước."
+                    )
+                
+                log.info(f"[BUILD] Repack All: {len(partitions)} partitions")
+                result = repack_all_partitions(project, output_sparse, _cancel_token)
             
         else:
             result = TaskResult.error(f"Không hỗ trợ build cho input_type: {input_type}")
         
         if result and result.ok:
+            # Validate output exists
+            output_imgs = list(project.out_image_dir.rglob("*.img"))
+            if not output_imgs:
+                return TaskResult.error("Build không tạo output image nào trong out/Image")
+            
             project.update_config(built=True)
             
             # Create marker
@@ -314,6 +342,8 @@ def pipeline_build(project: Project,
             ensure_dir(out_dir)
             marker = out_dir / "BUILD_OK.txt"
             marker.write_text(f"Built at {timestamp()}\n", encoding='utf-8')
+            
+            log.success(f"[BUILD] Hoàn tất. Output: out/Image/ ({len(output_imgs)} files)")
         
         return result or TaskResult.error("Build failed")
         
@@ -322,3 +352,4 @@ def pipeline_build(project: Project,
         import traceback
         log.debug(traceback.format_exc())
         return TaskResult.error(str(e))
+

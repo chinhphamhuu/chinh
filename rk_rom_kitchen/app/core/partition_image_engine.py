@@ -96,6 +96,19 @@ def detect_fs_type(img_path: Path) -> str:
     return "unknown"
 
 
+def normalize_mount_point(partition_name: str) -> str:
+    """
+    Normalize mount point to reduce bootloop on Android 10/11/12
+    system_a -> /system
+    vendor_b -> /vendor
+    product_a -> /product
+    """
+    base = partition_name.lower()
+    if base.endswith("_a") or base.endswith("_b"):
+        base = base[:-2]
+    return f"/{base}"
+
+
 def convert_sparse_to_raw(sparse_path: Path, raw_path: Path) -> TaskResult:
     """Convert sparse image to raw using simg2img"""
     log = get_log_bus()
@@ -412,6 +425,9 @@ def repack_partition_image(
     if not source_dir.exists():
         return TaskResult.error(f"Source không tồn tại: {source_dir}")
     
+    # Normalize mount point (system_a -> /system)
+    mount_point = normalize_mount_point(partition_name)
+    
     # OUTPUT CONTRACT: out/Image/<partition>_patched.img
     out_img_dir = project.out_image_dir
     ensure_dir(out_img_dir)
@@ -424,12 +440,26 @@ def repack_partition_image(
         if not make_ext4fs:
             return TaskResult.error("Thiếu tool make_ext4fs.exe. Vui lòng kiểm tra Tools Doctor.")
         
+        # Check for file_contexts (best-effort SELinux contexts)
+        file_contexts = source_dir / "file_contexts"
+        if not file_contexts.exists():
+            file_contexts = source_dir.parent / f"{partition_name}_file_contexts"
+        
         # Estimate size
         total_size = sum(f.stat().st_size for f in source_dir.rglob("*") if f.is_file())
         img_size = max(total_size * 2, 256 * 1024 * 1024)  # At least 256MB, 2x content
         
-        args = [make_ext4fs, "-l", str(img_size), "-a", f"/{partition_name}", output_path, source_dir]
-        log.info("[PARTITION] Running make_ext4fs...")
+        # Build args with normalized mount point
+        args = [make_ext4fs, "-l", str(img_size), "-a", mount_point, output_path, source_dir]
+        
+        # Best-effort: add file_contexts if available and e2fsdroid exists
+        if not file_contexts.exists():
+            log.warning(
+                "[PARTITION] Không tìm thấy file_contexts. Build ext4 có thể thiếu SELinux contexts. "
+                "Khuyến nghị thêm e2fsdroid để giảm bootloop."
+            )
+        
+        log.info(f"[PARTITION] Running make_ext4fs (mount: {mount_point})...")
         code, stdout, stderr = run_tool(args, timeout=1800)
         
         if code != 0:

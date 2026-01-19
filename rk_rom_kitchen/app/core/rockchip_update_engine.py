@@ -124,30 +124,60 @@ def preflight_check(project: Project) -> Tuple[bool, str]:
 
 
 def filter_partitions_by_slot(partitions: List[str], slot_mode: str) -> List[str]:
-    """Filter partitions dựa trên slot_mode"""
-    if slot_mode == "both":
-        return partitions
+    """
+    Filter partitions dựa trên slot_mode
+    DEDUP: nếu có *_a hoặc *_b thì bỏ base name tương ứng
+    """
+    # First, build set of base names that have slot variants
+    lower_parts = [p.lower() for p in partitions]
+    has_slot_a = set()
+    has_slot_b = set()
+    
+    for p in lower_parts:
+        if p.endswith("_a"):
+            has_slot_a.add(p[:-2])  # base name
+        elif p.endswith("_b"):
+            has_slot_b.add(p[:-2])
     
     result = []
+    
     for p in partitions:
         name = p.lower()
-        if slot_mode == "A":
-            # Only _a or no suffix
-            if name.endswith("_a") or (not name.endswith("_b")):
+        base = name.replace("_a", "").replace("_b", "")
+        
+        if slot_mode == "both":
+            # Include *_a and *_b; skip base if slot variant exists
+            if name.endswith("_a") or name.endswith("_b"):
                 result.append(p)
-        elif slot_mode == "B":
-            # Only _b or no suffix (fallback)
-            if name.endswith("_b"):
+            elif base not in has_slot_a and base not in has_slot_b:
+                # No slot variant, include base
                 result.append(p)
-            elif not name.endswith("_a"):
-                # Non-slot partition, check if _b exists
-                result.append(p)
-        else:  # auto
-            # Prefer _a, fallback to non-suffix
+                
+        elif slot_mode == "A":
+            # Prefer *_a, skip base if *_a exists
             if name.endswith("_a"):
                 result.append(p)
             elif not name.endswith("_b"):
+                # Base or non-slot
+                if base not in has_slot_a:
+                    result.append(p)
+                    
+        elif slot_mode == "B":
+            # Prefer *_b, skip base if *_b exists
+            if name.endswith("_b"):
                 result.append(p)
+            elif not name.endswith("_a"):
+                # Base or non-slot
+                if base not in has_slot_b:
+                    result.append(p)
+                    
+        else:  # auto - prefer _a, skip base/b if _a exists
+            if name.endswith("_a"):
+                result.append(p)
+            elif not name.endswith("_b"):
+                # Include base only if no *_a variant
+                if base not in has_slot_a:
+                    result.append(p)
     
     return result
 
