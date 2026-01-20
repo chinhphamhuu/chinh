@@ -435,9 +435,14 @@ def build_super_img(
     if not ok:
         return TaskResult.error(err)
     
-    # Build lpmake command - OUTPUT: out/Image/super/super_patched.img
-    output_path = super_out_dir / "super_patched.img"
-    ensure_dir(output_path.parent)
+    # Naming convention:
+    # RAW    : super_patched.raw.img
+    # SPARSE : super_patched.img
+    raw_path = super_out_dir / "super_patched.raw.img"
+    sparse_path = super_out_dir / "super_patched.img"
+    
+    # lpmake always creates RAW output
+    ensure_dir(raw_path.parent)
     
     args = [
         lpmake,
@@ -445,7 +450,7 @@ def build_super_img(
         "--super-name", "super",
         "--block-size", str(meta.block_size),
         "--device-size", str(meta.capacity),
-        "--output", str(output_path),
+        "--output", str(raw_path),
     ]
     
     # Add groups
@@ -475,19 +480,33 @@ def build_super_img(
         log.error(f"[SUPER] lpmake failed: {stderr}")
         return TaskResult.error(f"lpmake failed: {stderr[:200]}")
     
-    if not output_path.exists():
-        return TaskResult.error("lpmake không tạo output file")
+    if not raw_path.exists() or raw_path.stat().st_size == 0:
+        return TaskResult.error("lpmake không tạo output file hợp lệ")
+    
+    log.debug(f"[SUPER] Raw image: {human_size(raw_path.stat().st_size)}")
     
     # Convert to sparse if requested
-    final_path = output_path
-    if output_sparse and img2simg:
-        sparse_path = output_path.with_name("super_patched_sparse.img")
-        log.info("[SUPER] Converting to sparse...")
-        args = [img2simg, output_path, sparse_path]
-        code, _, _ = run_tool(args, timeout=300)
-        if code == 0 and sparse_path.exists():
-            final_path = sparse_path
-            output_path.unlink()  # Remove raw
+    final_path = raw_path
+    if output_sparse:
+        if img2simg:
+            log.info("[SUPER] Converting to sparse...")
+            conv_args = [str(img2simg), str(raw_path), str(sparse_path)]
+            code, _, conv_stderr = run_tool(conv_args, timeout=300)
+            
+            if code == 0 and sparse_path.exists() and sparse_path.stat().st_size > 0:
+                raw_path.unlink()  # Remove raw after successful convert
+                final_path = sparse_path
+                log.info(f"[SUPER] Converted to sparse: {human_size(sparse_path.stat().st_size)}")
+            else:
+                log.warning(f"[SUPER] img2simg failed, giữ RAW: {conv_stderr[:100]}")
+                final_path = raw_path
+        else:
+            log.warning("[SUPER] img2simg không có, giữ RAW image")
+            final_path = raw_path
+    
+    # Final validation
+    if not final_path.exists() or final_path.stat().st_size == 0:
+        return TaskResult.error("Build super thất bại: output không hợp lệ")
     
     elapsed = int((time.time() - start) * 1000)
     size = final_path.stat().st_size
@@ -499,3 +518,4 @@ def build_super_img(
         artifacts=[str(final_path)],
         elapsed_ms=elapsed
     )
+
