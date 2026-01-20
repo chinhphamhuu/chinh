@@ -19,8 +19,9 @@ from .task_defs import TaskResult
 from .project_store import Project
 from .logbus import get_log_bus
 from .utils import ensure_dir, human_size
-from .dirty_tracker import mark_clean_after_extract, auto_detect_dirty
+from .dirty_tracker import mark_clean_after_extract, auto_detect_dirty, is_dirty
 from ..tools.registry import get_tool_registry
+import shutil
 
 
 # Magic bytes
@@ -585,9 +586,18 @@ def extract_partition_image(
     meta_dir = project.extract_dir / "partition_metadata"
     ensure_dir(meta_dir)
     
+    # Compute relative path for original_image (for copy-through)
+    try:
+        original_image_relative = str(img_path.relative_to(project.root_dir))
+    except ValueError:
+        # If not relative to project root, use absolute
+        original_image_relative = str(img_path)
+    
     metadata = {
         "partition_name": partition_name,
         "original_path": str(img_path),
+        "original_image": original_image_relative,  # For copy-through
+        "original_is_sparse": was_sparse,           # For copy-through conversion
         "was_sparse": was_sparse,
         "fs_type": fs_type,
         "raw_image_path": str(work_img),
@@ -706,6 +716,101 @@ def repack_partition_image(
     output_path = out_img_dir / f"{partition_name}_patched.img"
     
     registry = get_tool_registry()
+
+    # =================================================================
+    # COPY-THROUGH LOGIC (Anti-Bootloop Phase 2)
+    # =================================================================
+    if not is_dirty(project, partition_name):
+        # Partition CLEAN -> Try copy-through
+        orig_rel = meta.get("original_image")
+        if orig_rel:
+            orig_path = project.root_dir / orig_rel
+            if orig_path.exists():
+                orig_sparse = meta.get("original_is_sparse", False)
+                
+                # Check magic bytes to be sure about sparse status
+                try:
+                    with open(orig_path, 'rb') as f:
+                        orig_sparse = f.read(4) == SPARSE_MAGIC
+                except Exception:
+                    pass
+
+                simg2img = registry.get_tool_path("simg2img")
+                img2simg = registry.get_tool_path("img2simg")
+                
+                copy_success = False
+                final_artifact = None
+                
+                if output_sparse:
+                    # Requested SPARSE output
+                    if orig_sparse:
+                        # Sparse -> Sparse: Direct copy
+                        final_artifact = out_img_dir / f"{partition_name}_patched.img"
+                        log.info(f"[NO-OP] Copying original sparse: {orig_path.name} -> {final_artifact.name}")
+                        shutil.copy2(orig_path, final_artifact)
+                        copy_success = True
+                    else:
+                        # Raw -> Sparse: Need img2simg conversion
+                        if img2simg:
+                            # Copy to tmp raw first to avoid messing source
+                            tmp_raw = out_img_dir / f"{partition_name}_patched.raw.img"
+                            shutil.copy2(orig_path, tmp_raw)
+                            
+                            final_artifact = out_img_dir / f"{partition_name}_patched.img"
+                            log.info(f"[NO-OP] Converting original raw -> sparse: {final_artifact.name}")
+                            
+                            code, _, stderr = run_tool([img2simg, tmp_raw, final_artifact], timeout=300)
+                            if code == 0 and final_artifact.exists():
+                                tmp_raw.unlink()  # Clean up temp raw
+                                copy_success = True
+                            else:
+                                log.warning(f"[NO-OP] Convert failed, fallback to RAW: {stderr[:100]}")
+                                # Fallback: return RAW artifact (better than fail)
+                                final_artifact = tmp_raw
+                                copy_success = True
+                        else:
+                            log.warning("[NO-OP] Thiếu img2simg, giữ output RAW")
+                            final_artifact = out_img_dir / f"{partition_name}_patched.raw.img"
+                            shutil.copy2(orig_path, final_artifact)
+                            copy_success = True
+                            
+                else:
+                    # Requested RAW output
+                    if not orig_sparse:
+                        # Raw -> Raw: Direct copy
+                        final_artifact = out_img_dir / f"{partition_name}_patched.raw.img"
+                        log.info(f"[NO-OP] Copying original raw: {orig_path.name} -> {final_artifact.name}")
+                        shutil.copy2(orig_path, final_artifact)
+                        copy_success = True
+                    else:
+                        # Sparse -> Raw: Need simg2img conversion
+                        if simg2img:
+                            final_artifact = out_img_dir / f"{partition_name}_patched.raw.img"
+                            log.info(f"[NO-OP] Converting original sparse -> raw: {final_artifact.name}")
+                            code, _, stderr = run_tool([simg2img, orig_path, final_artifact], timeout=300)
+                            if code == 0 and final_artifact.exists():
+                                copy_success = True
+                            else:
+                                log.error(f"[NO-OP] Convert failed: {stderr[:100]}")
+                        else:
+                            log.error("[NO-OP] Thiếu simg2img, không thể convert sparse -> raw")
+                
+                # If copy/convert successful, return result IMMEDIATELY
+                if copy_success and final_artifact and final_artifact.exists() and final_artifact.stat().st_size > 0:
+                    elapsed = 0 # Instant
+                    log.success(f"[PARTITION] Copy-through thành công: {final_artifact.name}")
+                    return TaskResult.success(
+                        message=f"Clean partition copied: {final_artifact.name}",
+                        artifacts=[str(final_artifact)],
+                        elapsed_ms=elapsed
+                    )
+            else:
+                log.warning(f"[NO-OP] Original image missing: {orig_path}, fallback rebuild.")
+        else:
+            log.warning(f"[NO-OP] Metadata missing original_image, fallback rebuild.")
+    else:
+        log.info(f"[PARTITION] Partition DIRTY -> Rebuilding...")
+    # =================================================================
     
     if fs_type == "ext4":
         # Use best-effort builder với e2fsdroid / make_ext4fs

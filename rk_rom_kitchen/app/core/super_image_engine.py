@@ -22,7 +22,10 @@ from .task_defs import TaskResult
 from .project_store import Project
 from .logbus import get_log_bus
 from .utils import ensure_dir, human_size
+from .dirty_tracker import is_dirty
+from .partition_image_engine import SPARSE_MAGIC
 from ..tools.registry import get_tool_registry
+import shutil
 
 
 @dataclass
@@ -224,6 +227,13 @@ def unpack_super_img(
     # Save metadata DUAL-WRITE (compatibility)
     meta_dict = meta.to_dict()
     
+    # Add original path for copy-through
+    try:
+        orig_rel = str(super_path.relative_to(project.root_dir))
+    except ValueError:
+        orig_rel = str(super_path)
+    meta_dict["original_super"] = orig_rel
+    
     # Path 1: out/Image/super/super_metadata.json (primary)
     meta_file1 = super_out_dir / "super_metadata.json"
     meta_file1.write_text(json.dumps(meta_dict, indent=2), encoding='utf-8')
@@ -386,6 +396,81 @@ def build_super_img(
             ))
     except Exception as e:
         return TaskResult.error(f"Lỗi đọc metadata: {e}")
+
+    # =================================================================
+    # COPY-THROUGH LOGIC (Anti-Bootloop Phase 2)
+    # Check if ALL partitions are CLEAN -> Copy original super
+    # =================================================================
+    all_clean = True
+    for p in meta.partitions:
+        if is_dirty(project, p.name):
+            all_clean = False
+            break
+            
+    if all_clean:
+        orig_rel = meta_dict.get("original_super")
+        if orig_rel:
+            orig_path = project.root_dir / orig_rel
+            if orig_path.exists():
+                log.success(f"[SUPER] Tất cả partitions CLEAN. Thực hiện copy-through super.")
+                
+                # Check sparse status
+                is_orig_sparse = False
+                try:
+                    with open(orig_path, 'rb') as f:
+                        is_orig_sparse = f.read(4) == SPARSE_MAGIC
+                except: pass
+                
+                copy_success = False
+                final_artifact = None
+                
+                if output_sparse:
+                    # Requested SPARSE
+                    if is_orig_sparse:
+                         final_artifact = super_out_dir / "super_patched.img"
+                         shutil.copy2(orig_path, final_artifact)
+                         copy_success = True
+                    else:
+                        # Raw -> Sparse (img2simg)
+                        if img2simg:
+                            tmp_raw = super_out_dir / "super_patched.raw.img"
+                            shutil.copy2(orig_path, tmp_raw)
+                            final_artifact = super_out_dir / "super_patched.img"
+                            code, _, _ = run_tool([img2simg, tmp_raw, final_artifact])
+                            if code==0 and final_artifact.exists():
+                                tmp_raw.unlink()
+                                copy_success = True
+                            else:
+                                final_artifact = tmp_raw # Fallback raw
+                                copy_success = True
+                        else:
+                            final_artifact = super_out_dir / "super_patched.raw.img"
+                            shutil.copy2(orig_path, final_artifact)
+                            copy_success = True
+                else:
+                    # Requested RAW
+                    if not is_orig_sparse:
+                        final_artifact = super_out_dir / "super_patched.raw.img"
+                        shutil.copy2(orig_path, final_artifact)
+                        copy_success = True
+                    else:
+                        # Sparse -> Raw (simg2img)
+                        if simg2img:
+                            final_artifact = super_out_dir / "super_patched.raw.img"
+                            code, _, _ = run_tool([simg2img, orig_path, final_artifact])
+                            if code==0 and final_artifact.exists():
+                                copy_success = True
+                
+                if copy_success and final_artifact and final_artifact.exists():
+                     return TaskResult.success(
+                         message=f"Super copy-through: {final_artifact.name}",
+                         artifacts=[str(final_artifact)],
+                         elapsed_ms=0
+                     )
+    
+    # Needs rebuild if dirty or missing original
+    log.info("[SUPER] Rebuilding super image (DIRTY or no original)...")
+    # =================================================================
     
     # Partitions from out/Image/super/partitions/
     partitions_dir = super_out_dir / "partitions"
