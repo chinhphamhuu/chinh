@@ -145,7 +145,21 @@ def resolve_relative_path(project_root: Path, path_str: str) -> Path:
     Returns:
         Path đã resolve absolute
     """
+    # Logic cross-platform: check if path matches Windows absolute pattern
+    import ntpath
+    from pathlib import PureWindowsPath
+    
+    # Check regular local Path absolute
     p = Path(path_str)
     if p.is_absolute():
         return p
+        
+    # Check if it looks like a Windows absolute path (e.g. C:\foo) even if on Linux
+    if ntpath.isabs(path_str):
+        # It is absolute in Windows terms.
+        # If we are on Windows, Path(path_str) is absolute, tested above.
+        # If we are NOT on Windows, Path(path_str) is relative.
+        # Return as-is (but as Path).
+        return p
+        
     return project_root / p

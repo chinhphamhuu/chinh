@@ -227,7 +227,12 @@ def patch_all_vbmeta(
                 "make_vbmeta_image", "--flags", "2",
                 "--padding_size", "4096", "--output", str(temp_path)
             ])
-            subprocess.run(args, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            res = subprocess.run(args, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            if res.returncode != 0:
+                log.warning(f"[AVB] avbtool failed (ret {res.returncode}): {res.stderr.decode('utf-8', errors='ignore').strip()[:200]}")
+                if temp_path.exists():
+                    try: temp_path.unlink()
+                    except: pass
         
         if not temp_path.exists():
             # Fallback manual creation
@@ -397,17 +402,7 @@ def patch_fstab_file(
         return TaskResult.error(str(e), elapsed_ms=elapsed)
 
 
-def disable_avb_only(
-    project: Project,
-    _cancel_token: Event = None
-) -> TaskResult:
-    """Part A only: Create vbmeta_disabled.img"""
-    log = get_log_bus()
-    
-    ensure_dir(project.image_dir)
-    output_path = project.image_dir / "vbmeta_disabled.img"
-    
-    return create_disabled_vbmeta(output_path, _cancel_token)
+
 
 
 def disable_fstab_only(
