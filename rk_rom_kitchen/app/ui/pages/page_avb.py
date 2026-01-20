@@ -15,7 +15,7 @@ from ...core.logbus import get_log_bus
 from ...core.state_machine import get_state_machine, TaskType
 from ...core.task_manager import get_task_manager
 from ...core.avb_manager import (
-    find_vbmeta_files, find_fstab_files,
+    scan_vbmeta_targets, find_fstab_files,
     disable_dm_verity_full, disable_avb_only, disable_fstab_only
 )
 
@@ -130,7 +130,7 @@ class PageAVB(QWidget):
         
         project = self._projects.current
         self._vbmeta_list.clear()
-        files = find_vbmeta_files(project)
+        files = scan_vbmeta_targets(project)
         for f in files:
             self._vbmeta_list.addItem(str(f))
         self._log.info(f"[AVB] Found {len(files)} vbmeta files")

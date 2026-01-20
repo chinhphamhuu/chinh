@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from .task_defs import TaskResult
 from .project_store import Project
 from .logbus import get_log_bus
-from .utils import ensure_dir, human_size
+from .utils import ensure_dir, human_size, resolve_relative_path
 from .dirty_tracker import mark_clean_after_extract, auto_detect_dirty, is_dirty
 from ..tools.registry import get_tool_registry
 import shutil
@@ -724,7 +724,7 @@ def repack_partition_image(
         # Partition CLEAN -> Try copy-through
         orig_rel = meta.get("original_image")
         if orig_rel:
-            orig_path = project.root_dir / orig_rel
+            orig_path = resolve_relative_path(project.root_dir, orig_rel)
             if orig_path.exists():
                 orig_sparse = meta.get("original_is_sparse", False)
                 

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from .task_defs import TaskResult
 from .project_store import Project
 from .logbus import get_log_bus
-from .utils import ensure_dir, human_size
+from .utils import ensure_dir, human_size, resolve_relative_path
 from .dirty_tracker import is_dirty
 from .partition_image_engine import SPARSE_MAGIC
 from ..tools.registry import get_tool_registry
@@ -410,7 +410,7 @@ def build_super_img(
     if all_clean:
         orig_rel = meta_dict.get("original_super")
         if orig_rel:
-            orig_path = project.root_dir / orig_rel
+            orig_path = resolve_relative_path(project.root_dir, orig_rel)
             if orig_path.exists():
                 log.success(f"[SUPER] Tất cả partitions CLEAN. Thực hiện copy-through super.")
                 
@@ -457,9 +457,13 @@ def build_super_img(
                         # Sparse -> Raw (simg2img)
                         if simg2img:
                             final_artifact = super_out_dir / "super_patched.raw.img"
-                            code, _, _ = run_tool([simg2img, orig_path, final_artifact])
+                            code, _, stderr = run_tool([simg2img, orig_path, final_artifact])
                             if code==0 and final_artifact.exists():
                                 copy_success = True
+                            else:
+                                 return TaskResult.error(f"Lỗi convert sparse->raw super: {stderr}")
+                        else:
+                            return TaskResult.error("Thiếu simg2img, không thể convert sparse -> raw output cho Super image.")
                 
                 if copy_success and final_artifact and final_artifact.exists():
                      return TaskResult.success(

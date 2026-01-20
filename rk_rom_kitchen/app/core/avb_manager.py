@@ -42,27 +42,107 @@ FSTAB_PATTERNS = {
 }
 
 
-def find_vbmeta_files(project: Project) -> List[Path]:
-    """Tìm tất cả vbmeta files trong project"""
-    vbmeta_names = [
-        "vbmeta.img",
-        "vbmeta_a.img",
-        "vbmeta_system.img", 
-        "vbmeta_vendor.img",
+def scan_vbmeta_targets(project: Project) -> List[Path]:
+    """
+    Scanner tìm vbmeta targets dựa trên slot_mode.
+    Priority: out/Image/update/partitions > in/
+    Returns: List output/target paths (để patch).
+    """
+    input_dirs = [
+        project.out_image_dir / "update" / "partitions",
+        project.in_dir,
     ]
     
-    found = []
-    search_dirs = [project.in_dir, project.out_dir, project.image_dir]
+    # 1. Collect all candidates
+    candidates = {}  # filename -> Path (full path found)
     
-    for search_dir in search_dirs:
-        if not search_dir.exists():
+    for d in input_dirs:
+        if not d.exists():
             continue
-        for name in vbmeta_names:
-            path = search_dir / name
-            if path.exists():
-                found.append(path)
+        # Scan vbmeta*.img
+        for p in d.glob("vbmeta*.img"):
+            if p.name == "vbmeta_disabled.img":
+                continue
+            if p.name not in candidates:
+                candidates[p.name] = p
+                
+    # 2. Filter by slot_mode
+    slot_mode = getattr(project.config, "slot_mode", "auto")
+    final_files = []
     
-    return list(set(found))
+    # helper: group by base (system, vendor, etc) ignoring _a/_b/suffix
+    # But vbmeta naming is weird: vbmeta.img, vbmeta_system.img, vbmeta_a.img
+    # Let's verify presence based on rules.
+    
+    all_names = set(candidates.keys())
+    
+    # If explicit A or B, filter
+    if slot_mode == "A":
+        # Keep *_a.img, keep no suffix if corresponding _a missing? 
+        # User rule: "A: chỉ *_a, fallback base nếu thiếu *_a"
+        # Base here implies: vbmeta_system.img vs vbmeta_system_a.img
+        
+        # We process logical groups.
+        # "vbmeta" -> vbmeta.img, vbmeta_a.img
+        # "vbmeta_system" -> vbmeta_system.img, vbmeta_system_a.img
+        
+        # Regex to split base and slot
+        # patterns: NAME_a.img, NAME.img
+        pass 
+        
+    # Simplified logic: Just Process ALL, but Filter output list?
+    # No, user wants scanner to adhere to rules.
+    
+    # Grouping
+    groups = {} # base -> { 'a': path, 'b': path, 'base': path }
+    
+    for name, path in candidates.items():
+        base = name
+        slot = "base"
+        
+        if name.endswith("_a.img"):
+            base = name[:-6] + ".img" # vbmeta_system_a.img -> vbmeta_system.img
+            slot = "a"
+        elif name.endswith("_b.img"):
+            base = name[:-6] + ".img"
+            slot = "b"
+        
+        if base not in groups:
+            groups[base] = {}
+        groups[base][slot] = path
+        
+    # Apply Rules
+    results = []
+    
+    for base, variants in groups.items():
+        has_a = "a" in variants
+        has_b = "b" in variants
+        has_base = "base" in variants
+        
+        if slot_mode == "auto":
+            # prefer _a > _b > base (standard logic?) or user said:
+            # "auto: prefer *_a nếu tồn tại, fallback *_b, nếu không có suffix thì dùng base"
+            if has_a: results.append(variants["a"])
+            elif has_b: results.append(variants["b"])
+            elif has_base: results.append(variants["base"])
+            
+        elif slot_mode == "A":
+            # Only _a, fallback base
+            if has_a: results.append(variants["a"])
+            elif has_base: results.append(variants["base"])
+            
+        elif slot_mode == "B":
+            if has_b: results.append(variants["b"])
+            elif has_base: results.append(variants["base"])
+            
+        elif slot_mode == "both":
+            # *_a + *_b. Remove base if *_a/_b exists
+            if has_a: results.append(variants["a"])
+            if has_b: results.append(variants["b"])
+            if has_base and not (has_a or has_b):
+                 results.append(variants["base"])
+                 
+    return results
 
 
 def find_fstab_files(project: Project) -> List[Path]:
@@ -90,114 +170,147 @@ def find_fstab_files(project: Project) -> List[Path]:
     return found
 
 
-def create_disabled_vbmeta(
-    output_path: Path,
+def patch_all_vbmeta(
+    project: Project,
     _cancel_token: Event = None
 ) -> TaskResult:
-    """
-    Tạo vbmeta_disabled.img bằng avbtool
-    Command: avbtool make_vbmeta_image --flags 2 --padding_size 4096 --output <output>
-    """
+    """Implement Patch Phase 3: Auto-size-preserve vbmeta patching"""
     log = get_log_bus()
     start = time.time()
     
-    log.info(f"[AVB] Creating disabled vbmeta: {output_path.name}")
+    targets = scan_vbmeta_targets(project)
+    if not targets:
+        return TaskResult.error("Không tìm thấy vbmeta targets để patch")
+        
+    log.info(f"[AVB] Found {len(targets)} targets: {[t.name for t in targets]}")
     
+    patched_count = 0
+    artifacts = []
+    
+    registry = None
     try:
         from ..tools.registry import get_tool_registry
         registry = get_tool_registry()
+    except: pass
+    
+    avbtool = registry.get_tool_path("avbtool") if registry else None
+    
+    ensure_dir(project.out_image_dir / "update" / "partitions")
+    
+    for target in targets:
+        if _cancel_token and _cancel_token.is_set():
+            break
+            
+        # Determine output path
+        # Nếu target nằm trong out/.../partitions -> overwrite
+        # Nếu target nằm trong in/ -> copy to out/.../partitions and overwrite
         
-        avbtool = registry.get_tool_path("avbtool")
+        is_in_out = str(project.out_image_dir) in str(target)
+        if is_in_out:
+            out_path = target
+        else:
+            out_path = project.out_image_dir / "update" / "partitions" / target.name
+            
+        # 1. Get orig size
+        orig_size = target.stat().st_size
         
+        # 2. Create temp disabled
+        temp_path = out_path.with_name(f"temp_{target.name}")
+        
+        args = []
         if avbtool:
-            # Determine if Python script
             if str(avbtool).lower().endswith('.py'):
                 args = [sys.executable, str(avbtool)]
             else:
                 args = [str(avbtool)]
-            
             args.extend([
-                "make_vbmeta_image",
-                "--flags", "2",  # AVB_VBMETA_IMAGE_FLAGS_VERIFICATION_DISABLED
-                "--padding_size", "4096",
-                "--output", str(output_path),
+                "make_vbmeta_image", "--flags", "2",
+                "--padding_size", "4096", "--output", str(temp_path)
             ])
+            subprocess.run(args, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        
+        if not temp_path.exists():
+            # Fallback manual creation
+            create_minimal_vbmeta(temp_path)
             
-            result = subprocess.run(
-                args,
-                capture_output=True,
-                text=True,
-                timeout=60,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            )
+        # 3. Size check & Padding
+        if temp_path.exists():
+            temp_size = temp_path.stat().st_size
+            if temp_size > orig_size:
+                log.error(f"[AVB] {target.name}: New size ({temp_size}) > Original ({orig_size}). Skipping.")
+                temp_path.unlink()
+                continue
+                
+            # Pad
+            if temp_size < orig_size:
+                padding = orig_size - temp_size
+                with open(temp_path, "ab") as f:
+                    f.write(b'\x00' * padding)
             
-            if result.returncode == 0 and output_path.exists():
-                elapsed = int((time.time() - start) * 1000)
-                log.success(f"[AVB] Created via avbtool: {output_path}")
-                return TaskResult.success(
-                    message=f"Created {output_path.name}",
-                    artifacts=[str(output_path)],
-                    elapsed_ms=elapsed
-                )
-            else:
-                log.warning(f"[AVB] avbtool failed: {result.stderr[:200]}")
+            # 4. Overwrite output safely
+            ensure_dir(out_path.parent)
+            shutil.move(str(temp_path), str(out_path))
+            
+            log.info(f"[AVB] Patched: {out_path.name} (size {orig_size})")
+            artifacts.append(str(out_path))
+            patched_count += 1
+            
+    if patched_count == 0:
+        return TaskResult.error("AVB Patch Failed: No files patched")
         
-        # Fallback: create minimal disabled vbmeta manually
-        log.info("[AVB] Creating minimal disabled vbmeta (fallback)")
-        
-        # AVB vbmeta header format (minimal with flags=2)
-        vbmeta_data = bytearray(4096)
-        
-        # Magic: "AVB0"
-        vbmeta_data[0:4] = b'AVB0'
-        
-        # Required libavb version major: 1
-        vbmeta_data[4:8] = (1).to_bytes(4, 'big')
-        # Required libavb version minor: 0
-        vbmeta_data[8:12] = (0).to_bytes(4, 'big')
-        
-        # Authentication data block size: 0
-        vbmeta_data[12:20] = (0).to_bytes(8, 'big')
-        # Aux data block size: 0
-        vbmeta_data[20:28] = (0).to_bytes(8, 'big')
-        
-        # Algorithm type: 0 (NONE)
-        vbmeta_data[28:32] = (0).to_bytes(4, 'big')
-        
-        # Offset and size fields (all zeros for minimal)
-        # Hash offset, size, auth offset, size, aux offset, size
-        for i in range(6):
-            vbmeta_data[32 + i*8 : 40 + i*8] = (0).to_bytes(8, 'big')
-        
-        # Descriptors offset/size
-        vbmeta_data[80:88] = (0).to_bytes(8, 'big')
-        vbmeta_data[88:96] = (0).to_bytes(8, 'big')
-        
-        # Rollback index: 0
-        vbmeta_data[96:104] = (0).to_bytes(8, 'big')
-        
-        # Flags: 2 (VERIFICATION_DISABLED)
-        vbmeta_data[120:124] = (2).to_bytes(4, 'big')
-        
-        # Release string (optional, pad with zeros)
-        release_str = b"RK_Kitchen_disabled"
-        vbmeta_data[128:128+len(release_str)] = release_str
-        
-        output_path.write_bytes(vbmeta_data)
-        
-        elapsed = int((time.time() - start) * 1000)
-        log.success(f"[AVB] Created (fallback): {output_path}")
-        
-        return TaskResult.success(
-            message=f"Created {output_path.name} (fallback mode)",
-            artifacts=[str(output_path)],
-            elapsed_ms=elapsed
-        )
-        
-    except Exception as e:
-        elapsed = int((time.time() - start) * 1000)
-        log.error(f"[AVB] Error: {e}")
-        return TaskResult.error(str(e), elapsed_ms=elapsed)
+    log.success(f"[AVB] Patched {patched_count} files successfully")
+    return TaskResult.success(
+        message=f"Patched {patched_count} vbmeta files",
+        artifacts=artifacts,
+        elapsed_ms=int((time.time()-start)*1000)
+    )
+
+
+def create_minimal_vbmeta(output_path: Path):
+    """Helper create minimal 4k vbmeta (flags=2) for fallback"""
+    data = bytearray(4096)
+    
+    # Magic: "AVB0"
+    data[0:4] = b'AVB0'
+    
+    # Required libavb version major: 1
+    data[4:8] = (1).to_bytes(4, 'big')
+    # Required libavb version minor: 0
+    data[8:12] = (0).to_bytes(4, 'big')
+    
+    # Authentication data block size: 0
+    data[12:20] = (0).to_bytes(8, 'big')
+    # Aux data block size: 0
+    data[20:28] = (0).to_bytes(8, 'big')
+    
+    # Algorithm type: 0 (NONE)
+    data[28:32] = (0).to_bytes(4, 'big')
+    
+    # Offset and size fields (all zeros for minimal)
+    # Hash offset, size, auth offset, size, aux offset, size
+    for i in range(6):
+        data[32 + i*8 : 40 + i*8] = (0).to_bytes(8, 'big')
+    
+    # Descriptors offset/size
+    data[80:88] = (0).to_bytes(8, 'big')
+    data[88:96] = (0).to_bytes(8, 'big')
+    
+    # Rollback index: 0
+    data[96:104] = (0).to_bytes(8, 'big')
+    
+    # Flags: 2 (VERIFICATION_DISABLED)
+    data[120:124] = (2).to_bytes(4, 'big')
+    
+    # Release string (optional, pad with zeros)
+    release_str = b"RK_Kitchen_disabled"
+    data[128:128+len(release_str)] = release_str
+    
+    output_path.write_bytes(data)
+
+
+def disable_avb_only(project: Project, _cancel_token: Event=None) -> TaskResult:
+    """Redirect to new implementation"""
+    return patch_all_vbmeta(project, _cancel_token)
 
 
 def patch_fstab_line(line: str) -> Tuple[str, List[str]]:

@@ -205,6 +205,14 @@ def pipeline_patch(project: Project,
     try:
         results = []
         
+        # known_patches definitions to validate against
+        SUPPORTED_PATCHES = {"disable_avb", "magisk", "debloat", "disable_dm_verity"}
+        
+        # Check for unsupported patches
+        for patch_name, enabled in patches.items():
+            if enabled and patch_name not in SUPPORTED_PATCHES:
+                return TaskResult.error(f"Patch '{patch_name}' chưa được hỗ trợ trong phiên bản này")
+        
         # AVB patch (vbmeta only)
         if patches.get("disable_avb"):
             from .avb_manager import disable_avb_only

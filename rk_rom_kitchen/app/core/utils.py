@@ -130,3 +130,22 @@ def clean_folder(folder: Union[str, Path], keep_folder: bool = True):
                 shutil.rmtree(item)
     else:
         shutil.rmtree(p)
+
+
+def resolve_relative_path(project_root: Path, path_str: str) -> Path:
+    """
+    Resolve path relative to project root safely.
+    Nếu path_str là absolute -> return path_str
+    Nếu path_str là relative -> return project_root / path_str
+    
+    Args:
+        project_root: Path đến thư mục gốc project
+        path_str: Đường dẫn cần resolve (str)
+        
+    Returns:
+        Path đã resolve absolute
+    """
+    p = Path(path_str)
+    if p.is_absolute():
+        return p
+    return project_root / p
