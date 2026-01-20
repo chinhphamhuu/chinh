@@ -82,16 +82,18 @@ def test_workspace_and_project():
     print("TEST 2 & 3: Workspace and Project")
     print("=" * 50)
     
-    from app.core.workspace import Workspace
     from app.core.project_store import ProjectStore
+    from app.core import workspace
     
     # Create temp workspace
     temp_dir = Path(tempfile.mkdtemp(prefix="rk_kitchen_test_"))
     print(f"Temp workspace: {temp_dir}")
     
     try:
-        # Initialize workspace
-        ws = Workspace(temp_dir)
+        # Initialize workspace SINGLETON
+        # Important: Use get_workspace to set global instance, not Workspace() directly
+        ws = workspace.get_workspace(temp_dir) 
+        
         assert ws.root == temp_dir, "Workspace root mismatch"
         print(f"[OK] Workspace created: {ws.root}")
         
@@ -108,7 +110,7 @@ def test_workspace_and_project():
         
         # Test project store
         store = ProjectStore()
-        store.set_workspace(temp_dir)
+        # store.set_workspace(temp_dir) # Removed method, handled in init via get_workspace
         
         project = store.create("another_project")
         assert project.exists, "Project should exist"
@@ -117,12 +119,14 @@ def test_workspace_and_project():
         
         projects = store.list_projects()
         assert "test_project" in projects or "another_project" in projects
-        print(f"[OK] ProjectStore list works: {projects}")
+        # print(f"[OK] ProjectStore list works: {projects}")
+        print("[OK] ProjectStore list works")
         
         return temp_dir, project
         
     except Exception as e:
-        print(f"[FAIL] Error: {e}")
+        # User repr to avoid UnicodeEncodeError on Windows console with VN text
+        print(f"[FAIL] Error: {repr(e)}")
         shutil.rmtree(temp_dir, ignore_errors=True)
         return None, None
 

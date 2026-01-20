@@ -1,85 +1,101 @@
 """
-Workspace Manager
-Quản lý workspace root tại %USERPROFILE%\Documents\RK_Kitchen\Projects
+Workspace Manager (Global)
+Quản lý Global Workspace: Projects/, tools/, logs/
 """
 import os
+import shutil
 from pathlib import Path
 from typing import List, Optional
 
 from .utils import ensure_dir
+from .errors import WorkspaceNotConfiguredError
 
+# Lazy import storage loop avoidance
+def _get_settings():
+    from .settings_store import get_settings_store
+    return get_settings_store()
 
 def get_workspace_root() -> Path:
     """
-    Lấy đường dẫn workspace root
-    Default: %USERPROFILE%\Documents\RK_Kitchen\Projects
+    Lấy đường dẫn workspace root từ Settings.
+    Raise WorkspaceNotConfiguredError nếu chưa setup.
     """
-    user_profile = os.environ.get('USERPROFILE', os.path.expanduser('~'))
-    return Path(user_profile) / 'Documents' / 'RK_Kitchen' / 'Projects'
+    s = _get_settings()
+    path_str = s.get("workspace_root")
+    if not path_str:
+        raise WorkspaceNotConfiguredError("Workspace chưa được cấu hình")
+    return Path(path_str)
+
+def set_workspace_root(path: Path):
+    """Lưu workspace root và khởi tạo layout"""
+    s = _get_settings()
+    s.set("workspace_root", str(path))
+    s.save()
+    # Auto ensure layout
+    Workspace(path)
 
 
 class Workspace:
-    """Quản lý workspace và projects"""
+    """Quản lý Global Workspace"""
     
     def __init__(self, root: Optional[Path] = None):
         """
         Args:
-            root: Custom workspace root, nếu None sẽ dùng default
+            root: Custom root. Nếu None sẽ lấy từ settings (có thể raise Error).
         """
-        self._root = root or get_workspace_root()
-        self._ensure_workspace()
-    
-    def _ensure_workspace(self):
-        """Đảm bảo workspace folder tồn tại"""
-        ensure_dir(self._root)
+        if root:
+            self._root = root
+        else:
+            self._root = get_workspace_root()
+            
+        self._ensure_layout()
     
     @property
     def root(self) -> Path:
-        """Đường dẫn workspace root"""
         return self._root
     
+    @property
+    def projects_dir(self) -> Path:
+        return self._root / "Projects"
+    
+    @property
+    def tools_dir(self) -> Path:
+        return self._root / "tools" / "win64"
+    
+    @property
+    def logs_dir(self) -> Path:
+        return self._root / "logs"
+
+    def _ensure_layout(self):
+        """Tạo các folder bắt buộc"""
+        ensure_dir(self.projects_dir)
+        ensure_dir(self.tools_dir)
+        ensure_dir(self.logs_dir)
+    
     def list_projects(self) -> List[str]:
-        """Liệt kê tất cả projects trong workspace"""
-        if not self._root.exists():
+        """Liệt kê projects trong folder Projects"""
+        if not self.projects_dir.exists():
             return []
         
         projects = []
-        for item in self._root.iterdir():
+        for item in self.projects_dir.iterdir():
             if item.is_dir() and not item.name.startswith('.'):
-                # Check if it's a valid project (has config folder)
+                # Basic check: config or in folder exists?
                 if (item / 'config').exists() or (item / 'in').exists():
                     projects.append(item.name)
         
         return sorted(projects)
     
     def project_exists(self, name: str) -> bool:
-        """Kiểm tra project có tồn tại không"""
-        return (self._root / name).is_dir()
+        return (self.projects_dir / name).is_dir()
     
     def get_project_path(self, name: str) -> Path:
-        """Lấy đường dẫn project"""
-        return self._root / name
+        return self.projects_dir / name
     
     def create_project_structure(self, name: str) -> Path:
-        """
-        Tạo cấu trúc thư mục chuẩn cho project mới
+        """Tạo project mới trong Projects/"""
+        project_path = self.projects_dir / name
         
-        Structure:
-            <project>/
-                in/           - Input ROM files
-                out/
-                    Source/   - Extracted source
-                    Image/    - Extracted images
-                temp/         - Temporary files
-                logs/         - Log files
-                config/       - Project configuration
-        
-        Returns:
-            Path đến project root
-        """
-        project_path = self._root / name
-        
-        # Tạo các thư mục con
         dirs = [
             project_path / 'in',
             project_path / 'out' / 'Source',
@@ -95,18 +111,9 @@ class Workspace:
         return project_path
     
     def delete_project(self, name: str) -> bool:
-        """
-        Xóa project
-        
-        Returns:
-            True nếu xóa thành công
-        """
-        import shutil
-        
-        project_path = self._root / name
+        project_path = self.projects_dir / name
         if not project_path.exists():
             return False
-        
         try:
             shutil.rmtree(project_path)
             return True
@@ -114,25 +121,72 @@ class Workspace:
             return False
     
     def get_project_size(self, name: str) -> int:
-        """Tính tổng size của project (bytes)"""
-        project_path = self._root / name
+        project_path = self.projects_dir / name
         if not project_path.exists():
             return 0
-        
         total = 0
-        for file_path in project_path.rglob('*'):
-            if file_path.is_file():
-                total += file_path.stat().st_size
+        for p in project_path.rglob('*'):
+            if p.is_file():
+                total += p.stat().st_size
         return total
-
 
 # Singleton instance
 _workspace: Optional[Workspace] = None
 
+def migrate_workspace(old_root: Path, new_root: Path, mode: str):
+    """
+    Di chuyển dữ liệu sang workspace mới.
+    Mode: 'MOVE', 'COPY', 'SKIP'
+    """
+    if mode == 'SKIP':
+        return
+
+    # Ensure dest layout
+    Workspace(new_root) 
+    
+    dirs_to_sync = ['Projects', os.path.join('tools', 'win64')]
+    
+    for relative in dirs_to_sync:
+        src = old_root / relative
+        dst = new_root / relative
+        
+        if not src.exists():
+            continue
+            
+        if not dst.parent.exists():
+            dst.parent.mkdir(parents=True)
+            
+        # If dest exists, we have collision?
+        # Simple strategy: Copy tree (merge)
+        try:
+            if mode == 'COPY':
+                _copy_tree_merge(src, dst)
+            elif mode == 'MOVE':
+                _copy_tree_merge(src, dst)
+                shutil.rmtree(src)
+        except Exception as e:
+            raise RuntimeError(f"Lỗi khi migrate ({mode}) {relative}: {e}")
+
+def _copy_tree_merge(src: Path, dst: Path):
+    """Copy recursive, merge if exists"""
+    if not dst.exists():
+        shutil.copytree(src, dst)
+        return
+
+    for item in src.iterdir():
+        d = dst / item.name
+        if item.is_dir():
+            _copy_tree_merge(item, d)
+        else:
+            if not d.exists(): # Don't overwrite existing
+                shutil.copy2(item, d)
 
 def get_workspace(root: Optional[Path] = None) -> Workspace:
-    """Lấy singleton Workspace instance"""
+    """Lấy singleton (hoặc tạo mới nếu root thay đổi/chưa có)"""
     global _workspace
-    if _workspace is None or (root is not None and _workspace.root != root):
+    if _workspace is None:
+        _workspace = Workspace(root)
+    elif root and _workspace.root != root:
         _workspace = Workspace(root)
     return _workspace
+

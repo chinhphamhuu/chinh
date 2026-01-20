@@ -8,6 +8,11 @@ class KitchenError(Exception):
     pass
 
 
+class WorkspaceNotConfiguredError(KitchenError):
+    """Workspace chưa được cấu hình (Lần đầu chạy)"""
+    pass
+
+
 class ToolNotFoundError(KitchenError):
     """Tool không tìm thấy hoặc không khả dụng"""
     def __init__(self, tool_name: str, searched_paths: list = None):

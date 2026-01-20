@@ -146,8 +146,7 @@ class ToolInfo:
 
 class ToolRegistry:
     """
-    Registry để quản lý tools
-    Hỗ trợ alias resolution cho mỗi tool_id
+    Registry để quản lý tools using Workspace or App fallback.
     """
     
     _instance = None
@@ -175,63 +174,42 @@ class ToolRegistry:
                 description=defn.get("description", ""),
                 aliases=defn.get("aliases", []),
             )
+            
+        # AUTO-DETECT ON STARTUP
+        self._log.info("[REGISTRY] Auto-detecting tools...")
+        self.detect_all()
     
     def _get_search_paths(self) -> List[Path]:
         """Lấy danh sách paths để search tools
         Search order:
-        1. User custom tool_dir (nếu set)
-        2. Bundled tools/win64 (relative to repo)
-        3. PATH environment
+        1. Workspace tools (Primary): <workspace>/tools/win64
+        2. App tools (Fallback/Dev): <app>/tools/win64
         """
         paths = []
         
-        # 1. Custom tool_dir từ settings (user priority)
-        custom_dir = self._settings.get('tool_dir', '')
-        if custom_dir and Path(custom_dir).is_dir():
-            paths.append(Path(custom_dir))
-        
-        # 2. Bundled tools/win64 (relative to rk_rom_kitchen/)
-        # __file__ = rk_rom_kitchen/app/tools/registry.py
-        # app_root = rk_rom_kitchen/
+        # 1. Primary: Workspace
+        try:
+            from ..core.workspace import get_workspace
+            ws = get_workspace()
+            if ws and ws.tools_dir.is_dir():
+                paths.append(ws.tools_dir)
+        except Exception:
+            pass # Workspace maybe not configured yet
+            
+        # 2. Fallback: App dir (relative to this file)
+        # rk_rom_kitchen/app/tools/registry.py -> rk_rom_kitchen/tools/win64
         app_root = Path(__file__).parent.parent.parent
         bundled_dir = app_root / 'tools' / 'win64'
         if bundled_dir.is_dir():
             paths.append(bundled_dir)
-        
-        # 3. Legacy third_party path (fallback - không khuyến nghị)
-        legacy_dir = app_root / 'third_party' / 'tools' / 'win64'
-        if legacy_dir.is_dir():
-            paths.append(legacy_dir)
-        
-        # 4. PATH environment
-        env_path = os.environ.get('PATH', '')
-        for p in env_path.split(os.pathsep):
-            if p and Path(p).is_dir():
-                paths.append(Path(p))
-        
+            
         return paths
-    
-    def get_active_tool_dir(self) -> Optional[Path]:
-        """Lấy đường dẫn tool directory đang active"""
-        custom_dir = self._settings.get('tool_dir', '')
-        if custom_dir and Path(custom_dir).is_dir():
-            return Path(custom_dir)
-        
-        # Check bundled
-        app_root = Path(__file__).parent.parent.parent
-        bundled_dir = app_root / 'tools' / 'win64'
-        if bundled_dir.is_dir():
-            return bundled_dir
-        
-        return None
     
     def detect_all(self) -> Dict[str, ToolInfo]:
         """
         Detect tất cả tools
         Returns: Dict mapping tool_id -> ToolInfo
         """
-        self._log.info("[REGISTRY] Scanning tools...")
-        
         search_paths = self._get_search_paths()
         
         for tool_id, defn in TOOL_DEFINITIONS.items():
@@ -246,7 +224,7 @@ class ToolRegistry:
         # Summary
         available = sum(1 for t in self._tools.values() if t.available)
         total = len(self._tools)
-        self._log.info(f"[REGISTRY] Found {available}/{total} tools")
+        # self._log.info(f"[REGISTRY] Found {available}/{total} tools")
         
         return self._tools.copy()
     
@@ -338,17 +316,12 @@ class ToolRegistry:
         """Lấy list tools có sẵn"""
         return [t.tool_id for t in self._tools.values() if t.available]
     
-    def set_custom_tool_dir(self, path: Path):
-        """Set custom tool directory và re-detect"""
-        if path.is_dir():
-            self._settings.set('tool_dir', str(path))
-            self.detect_all()
-    
     def run_doctor(self) -> str:
         """
         Tools Doctor - scan và report trạng thái tools
         Returns: report text
         """
+        # Force re-detect when running doctor manually
         self.detect_all()
         
         lines = [
@@ -356,11 +329,11 @@ class ToolRegistry:
             "        TOOLS DOCTOR REPORT",
             "=" * 50,
             "",
-            f"Search paths:",
+            f"Search paths (Priority):",
         ]
         
-        for p in self._get_search_paths():
-            lines.append(f"  - {p}")
+        for i, p in enumerate(self._get_search_paths(), 1):
+            lines.append(f"  {i}. {p}")
         
         lines.append("")
         lines.append("Tools Status:")

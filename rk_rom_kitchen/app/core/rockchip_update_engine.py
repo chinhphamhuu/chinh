@@ -203,6 +203,19 @@ def filter_partitions_by_slot(partitions: List[str], slot_mode: str) -> List[str
     return result
 
 
+def preflight_read_file(path: Path, size: int) -> None:
+    """Check file readability to catch WinError 1392 (Disk Corrupt)"""
+    if not path.exists():
+        return
+    try:
+        with open(path, 'rb') as f:
+            f.read(size)
+    except OSError as e:
+        # 1392 = The file or directory is corrupted and unreadable.
+        if getattr(e, 'winerror', 0) == 1392:
+            raise RuntimeError(f"LỖI Ổ CỨNG (Corrupt File): {path.name}\nFile bị hỏng vật lý hoặc lỗi file system (WinError 1392).\nVui lòng copy ROM sang ổ đĩa khác và chạy 'chkdsk /f'.")
+        raise e
+
 def unpack_with_img_unpack(input_path: Path, output_dir: Path) -> TaskResult:
     """Unpack bằng img_unpack/imgRePackerRK"""
     log = get_log_bus()
@@ -214,15 +227,32 @@ def unpack_with_img_unpack(input_path: Path, output_dir: Path) -> TaskResult:
     
     ensure_dir(output_dir)
     
+    # HARDENING: Preflight check input + tool
+    try:
+        preflight_read_file(input_path, 1024 * 1024)  # 1MB
+        preflight_read_file(img_unpack, 64 * 1024)    # 64KB
+    except RuntimeError as e:
+        return TaskResult.error(str(e))
+    except Exception as e:
+        return TaskResult.error(f"Cannot read file: {e}")
+    
+    # CWD must be output_dir for safety (some tools write relative)
+    # img_unpack usage: tool <input> <output>
     args = [img_unpack, input_path, output_dir]
     log.info(f"[UPDATE] Đang unpack với img_unpack...")
-    code, stdout, stderr = run_tool(args, timeout=1800)
+    
+    # Check output folder writeability?
+    # run_tool
+    code, stdout, stderr = run_tool(args, cwd=output_dir, timeout=1800)
     
     if code != 0:
         return TaskResult.error(f"img_unpack failed (code {code}): {stderr[:200]}")
     
     extracted = list(output_dir.glob("*.img")) + list(output_dir.glob("*.bin"))
     if not extracted:
+        # Check WinError 1392 pattern in stderr if tool caught it
+        if "1392" in stderr or "corrupt" in stderr.lower():
+             return TaskResult.error(f"LỖI Ổ CỨNG: Tool báo lỗi corrupt ({stderr[:100]})")
         return TaskResult.error("img_unpack không tạo file output")
     
     log.success(f"[UPDATE] Unpacked {len(extracted)} files")
@@ -240,13 +270,28 @@ def unpack_with_afptool(input_path: Path, output_dir: Path) -> TaskResult:
     
     ensure_dir(output_dir)
     
+    # HARDENING
+    try:
+        preflight_read_file(input_path, 1024 * 1024)
+        preflight_read_file(afptool, 64 * 1024)
+    except RuntimeError as e:
+        return TaskResult.error(str(e))
+    except Exception as e:
+        return TaskResult.error(f"Cannot read file: {e}")
+    
     args = [afptool, "-unpack", input_path, output_dir]
     log.info(f"[UPDATE] Đang unpack với afptool...")
-    code, stdout, stderr = run_tool(args, timeout=1800)
+    
+    code, stdout, stderr = run_tool(args, cwd=output_dir, timeout=1800)
     
     if code != 0:
         return TaskResult.error(f"afptool failed (code {code}): {stderr[:200]}")
     
+    # Validate output?
+    extracted = list(output_dir.glob("*"))
+    if not extracted:
+        return TaskResult.error("afptool không tạo output")
+        
     log.success(f"[UPDATE] afptool unpack completed")
     return TaskResult.success(message="Unpacked với afptool")
 

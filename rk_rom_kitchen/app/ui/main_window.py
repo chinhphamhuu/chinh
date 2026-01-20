@@ -69,20 +69,36 @@ class AboutPage(QWidget):
         pass
 
 
+class WorkspaceBar(QWidget):
+    def __init__(self, workspace, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setStyleSheet("background-color: #2d2d2d; border-bottom: 1px solid #3d3d3d;")
+        
+        from PyQt5.QtWidgets import QPushButton
+        
+        lbl = QLabel(f"Workspace: <b>{workspace.root}</b>")
+        lbl.setStyleSheet("color: #cccccc;")
+        layout.addWidget(lbl)
+        
+        layout.addStretch()
+        
+        btn_open = QPushButton("Mở Folder")
+        btn_open.clicked.connect(lambda: os.startfile(str(workspace.root)))
+        layout.addWidget(btn_open)
+        
+        btn_tools = QPushButton("Mở Tools")
+        btn_tools.clicked.connect(lambda: os.startfile(str(workspace.tools_dir)))
+        layout.addWidget(btn_tools)
+        
+        btn_change = QPushButton("Đổi Workspace...")
+        btn_change.clicked.connect(parent._change_workspace if parent else None)
+        layout.addWidget(btn_change)
+
 class MainWindow(QMainWindow):
     """
     Main application window
-    Layout:
-    ┌──────┬──────────┬─────────────────────────────┐
-    │ Icon │ Project  │                             │
-    │ Side │ Sidebar  │       Main Canvas           │
-    │ bar  │ (~280px) │       (Pages)               │
-    │(56px)│          │                             │
-    ├──────┴──────────┴─────────────────────────────┤
-    │              Log Panel (~180px)                │
-    ├───────────────────────────────────────────────┤
-    │              Status Panel                      │
-    └───────────────────────────────────────────────┘
     """
     
     def __init__(self):
@@ -122,6 +138,10 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
+        
+        # Workspace Bar
+        self._ws_bar = WorkspaceBar(self._ctx.workspace, self)
+        main_layout.addWidget(self._ws_bar)
         
         # Top area (sidebars + canvas)
         top_widget = QWidget()
@@ -192,6 +212,39 @@ class MainWindow(QMainWindow):
         # Project sidebar
         self._project_sidebar.project_changed.connect(self._on_project_changed)
         self._project_sidebar.action_triggered.connect(self._on_sidebar_action)
+    
+    def _change_workspace(self):
+        """Handle workspace change request"""
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        
+        new_path = QFileDialog.getExistingDirectory(self, "Chọn Workspace Mới")
+        if not new_path:
+            return
+            
+        from pathlib import Path
+        new_root = Path(new_path)
+        old_root = self._ctx.workspace.root
+        
+        if new_root == old_root:
+            return
+
+        from .dialogs.workspace_migration_dialog import WorkspaceMigrationDialog
+        dlg = WorkspaceMigrationDialog(old_root, new_root, self)
+        if dlg.exec_():
+            mode = dlg.mode
+            try:
+                from ..core.workspace import migrate_workspace, set_workspace_root
+                
+                # Show loading?
+                self._log.info(f"Đang chuyển workspace ({mode})...")
+                migrate_workspace(old_root, new_root, mode)
+                set_workspace_root(new_root)
+                
+                QMessageBox.information(self, "Thành công", "Đã chuyển Workspace. Ứng dụng sẽ đóng để khởi động lại.")
+                self.close()
+            except Exception as e:
+                QMessageBox.critical(self, "Lỗi", f"Lỗi khi chuyển workspace: {e}")
+                
     
     def _on_page_changed(self, page_id: str):
         """Handle page navigation"""

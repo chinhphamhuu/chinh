@@ -57,15 +57,7 @@ class PageSettings(QWidget):
         
         layout.addWidget(lang_group)
         
-        # Tool directory section
-        tool_group = QGroupBox(t("settings_tool_dir"))
-        tool_layout = QVBoxLayout(tool_group)
-        
-        self._tool_picker = FolderPicker(placeholder="Đường dẫn thư mục chứa tools")
-        self._tool_picker.folder_selected.connect(self._on_tool_dir_changed)
-        tool_layout.addWidget(self._tool_picker)
-        
-        layout.addWidget(tool_group)
+        layout.addWidget(lang_group)
         
         # Tools status section
         tools_group = QGroupBox(t("settings_tools_table"))
@@ -101,11 +93,6 @@ class PageSettings(QWidget):
         if index >= 0:
             self._lang_combo.setCurrentIndex(index)
         
-        # Tool dir
-        tool_dir = self._settings.get('tool_dir', '')
-        if tool_dir:
-            self._tool_picker.set_path(tool_dir)
-        
         # Refresh tools table
         self._refresh_tools_table()
     
@@ -128,13 +115,6 @@ class PageSettings(QWidget):
                 t("dialog_info"),
                 "Một số thay đổi ngôn ngữ sẽ được áp dụng khi khởi động lại ứng dụng."
             )
-    
-    def _on_tool_dir_changed(self, path: str):
-        """Handle tool directory change"""
-        self._settings.set('tool_dir', path)
-        self._registry.set_custom_tool_dir(Path(path))
-        self._refresh_tools_table()
-        self._log.info(f"Đã set tool directory: {path}")
     
     def _on_check_tools(self):
         """Check all tools"""
