@@ -74,7 +74,7 @@ class WorkspaceBar(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
-        layout.setStyleSheet("background-color: #2d2d2d; border-bottom: 1px solid #3d3d3d;")
+        self.setStyleSheet("background-color: #2d2d2d; border-bottom: 1px solid #3d3d3d;")
         
         from PyQt5.QtWidgets import QPushButton
         
